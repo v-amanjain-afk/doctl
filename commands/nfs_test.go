@@ -57,12 +57,90 @@ var (
 			Type:   "snapshot",
 		},
 	}
+	testNfsAccessPoint = do.NfsAccessPoint{
+		ID:      "ap-123",
+		Name:    "my-access-point",
+		ShareID: testId,
+		Path:    "/exports/data",
+		Status:  "ACCESS_POINT_ACTIVE",
+		AccessPolicy: do.NfsAccessPointPolicy{
+			Anonuid:                    65534,
+			Anongid:                    65534,
+			Protocols:                  []string{"NFS4"},
+			SquashConfig:               "ROOT_SQUASH",
+			IdentityEnforcementEnabled: true,
+		},
+		CreatedAt: "2026-06-17T10:00:00Z",
+		UpdatedAt: "2026-06-17T10:00:00Z",
+	}
 )
 
 func TestNfsCommand(t *testing.T) {
 	cmd := Nfs()
 	assert.NotNil(t, cmd)
-	assertCommandNames(t, cmd, "create", "list", "get", "delete", "snapshot", "resize", "attach", "detach", "reassign", "switch-performance-tier")
+	assertCommandNames(t, cmd, "create", "list", "get", "delete", "snapshot", "resize", "attach", "detach", "reassign", "switch-performance-tier", "access-point")
+}
+
+func TestRunNfsAccessPointCreate(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		expectedReq := &do.NfsAccessPointCreateRequest{
+			Name:  "my-access-point",
+			Path:  "/exports/data",
+			VpcID: "vpc-1234",
+			AccessPolicy: do.NfsAccessPointPolicy{
+				Anonuid:                    65534,
+				Anongid:                    65534,
+				Protocols:                  []string{"NFS4"},
+				SquashConfig:               "ROOT_SQUASH",
+				IdentityEnforcementEnabled: true,
+			},
+		}
+		tm.nfs.EXPECT().CreateAccessPoint(testId, expectedReq).Return(
+			&do.NfsAccessPointActionResponse{AccessPoint: &testNfsAccessPoint, Action: testNfsAction.NfsAction},
+			nil,
+		)
+
+		config.Doit.Set(config.NS, "share-id", testId)
+		config.Doit.Set(config.NS, "name", "my-access-point")
+		config.Doit.Set(config.NS, "path", "/exports/data")
+		config.Doit.Set(config.NS, "vpc-id", "vpc-1234")
+		config.Doit.Set(config.NS, "protocols", []string{"nfs4"})
+		config.Doit.Set(config.NS, "squash-config", "root_squash")
+		config.Doit.Set(config.NS, "anonuid", "65534")
+		config.Doit.Set(config.NS, "anongid", "65534")
+		config.Doit.Set(config.NS, "identity-enforcement-enabled", true)
+
+		err := nfsAccessPointCreate(config)
+		require.NoError(t, err)
+	})
+}
+
+func TestRunNfsAccessPointGet(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.nfs.EXPECT().GetAccessPoint("ap-123").Return(&testNfsAccessPoint, nil)
+		config.Doit.Set(config.NS, "id", "ap-123")
+		err := nfsAccessPointGet(config)
+		require.NoError(t, err)
+	})
+}
+
+func TestRunNfsAccessPointList(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.nfs.EXPECT().ListAccessPoints(testId, "ACCESS_POINT_ACTIVE").Return([]do.NfsAccessPoint{testNfsAccessPoint}, nil)
+		config.Doit.Set(config.NS, "share-id", testId)
+		config.Doit.Set(config.NS, "status", "access_point_active")
+		err := nfsAccessPointList(config)
+		require.NoError(t, err)
+	})
+}
+
+func TestRunNfsAccessPointDelete(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.nfs.EXPECT().DeleteAccessPoint("ap-123").Return(&do.NfsAccessPointActionResponse{AccessPoint: &testNfsAccessPoint, Action: testNfsAction.NfsAction}, nil)
+		config.Doit.Set(config.NS, "id", "ap-123")
+		err := nfsAccessPointDelete(config)
+		require.NoError(t, err)
+	})
 }
 
 func TestRunNfsCreate(t *testing.T) {

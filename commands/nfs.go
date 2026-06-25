@@ -17,6 +17,7 @@ package commands
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/digitalocean/doctl"
 	"github.com/digitalocean/doctl/commands/displayers"
@@ -106,6 +107,40 @@ doctl nfs list --region 'atl1' --format ID,Name,Size,Status`
 		`doctl nfs switch-performance-tier --id b050990d-4337-4a9d-9c8d-9f759a83936a --performance-tier high`
 
 	cmd.AddCommand(nfsSnapshots())
+	cmd.AddCommand(nfsAccessPoints())
+
+	return cmd
+}
+
+func nfsAccessPoints() *Command {
+	cmd := &Command{
+		Command: &cobra.Command{
+			Use:   "access-point",
+			Short: "Display commands for NFS access points",
+			Long:  "The commands under `doctl nfs access-point` are for managing NFS share access points.",
+		},
+	}
+
+	create := CmdBuilder(cmd, nfsAccessPointCreate, "create [flags]", "Create an NFS access point", "Create an NFS access point for a share.", Writer, displayerType(&displayers.NfsAction{}), overrideCmdNS("nfs-access-point"))
+	AddStringFlag(create, "share-id", "", "", "the ID of the NFS share", requiredOpt())
+	AddStringFlag(create, "name", "n", "", "the access point name", requiredOpt())
+	AddStringFlag(create, "path", "", "", "the export path for the access point, must start with /", requiredOpt())
+	AddStringSliceFlag(create, "protocols", "", []string{"NFS4"}, "allowed protocols (NFS, NFS4)")
+	AddStringFlag(create, "squash-config", "", "ROOT_SQUASH", "squash mode (NO_SQUASH, ROOT_SQUASH, ALL_SQUASH)")
+	AddStringFlag(create, "anonuid", "", "65534", "anon uid for squashed users")
+	AddStringFlag(create, "anongid", "", "65534", "anon gid for squashed users")
+	AddBoolFlag(create, "identity-enforcement-enabled", "", false, "enable identity enforcement for the export")
+	AddStringFlag(create, "vpc-id", "", "", "the VPC ID for this access point", requiredOpt())
+
+	get := CmdBuilder(cmd, nfsAccessPointGet, "get [flags]", "Get an NFS access point", "Get an NFS access point by ID.", Writer, displayerType(&displayers.NfsAccessPoint{}), overrideCmdNS("nfs-access-point"))
+	AddStringFlag(get, "id", "", "", "the ID of the NFS access point", requiredOpt())
+
+	list := CmdBuilder(cmd, nfsAccessPointList, "list [flags]", "List NFS access points for a share", "List NFS access points for a share.", Writer, aliasOpt("ls"), displayerType(&displayers.NfsAccessPoint{}), overrideCmdNS("nfs-access-point"))
+	AddStringFlag(list, "share-id", "", "", "the ID of the NFS share", requiredOpt())
+	AddStringFlag(list, "status", "", "", "optional status filter (ACCESS_POINT_CREATING, ACCESS_POINT_ACTIVE, ACCESS_POINT_FAILED, ACCESS_POINT_DELETED)")
+
+	deleteCmd := CmdBuilder(cmd, nfsAccessPointDelete, "delete [flags]", "Delete an NFS access point", "Delete an NFS access point by ID.", Writer, aliasOpt("rm"), displayerType(&displayers.NfsAction{}), overrideCmdNS("nfs-access-point"))
+	AddStringFlag(deleteCmd, "id", "", "", "the ID of the NFS access point", requiredOpt())
 
 	return cmd
 }
@@ -515,6 +550,144 @@ func nfsSwitchPerformanceTier(c *CmdConfig) error {
 	return c.Display(item)
 }
 
+func nfsAccessPointCreate(c *CmdConfig) error {
+	shareID, err := c.Doit.GetString(c.NS, "share-id")
+	if err != nil {
+		return err
+	}
+
+	name, err := c.Doit.GetString(c.NS, "name")
+	if err != nil {
+		return err
+	}
+
+	path, err := c.Doit.GetString(c.NS, "path")
+	if err != nil {
+		return err
+	}
+
+	protocols, err := c.Doit.GetStringSlice(c.NS, "protocols")
+	if err != nil {
+		return err
+	}
+
+	squashConfig, err := c.Doit.GetString(c.NS, "squash-config")
+	if err != nil {
+		return err
+	}
+
+	anonUIDStr, err := c.Doit.GetString(c.NS, "anonuid")
+	if err != nil {
+		return err
+	}
+	anonUID, err := strconv.ParseUint(anonUIDStr, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid anonuid value: %v", err)
+	}
+
+	anonGIDStr, err := c.Doit.GetString(c.NS, "anongid")
+	if err != nil {
+		return err
+	}
+	anonGID, err := strconv.ParseUint(anonGIDStr, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid anongid value: %v", err)
+	}
+
+	identityEnforcementEnabled, err := c.Doit.GetBool(c.NS, "identity-enforcement-enabled")
+	if err != nil {
+		return err
+	}
+
+	vpcID, err := c.Doit.GetString(c.NS, "vpc-id")
+	if err != nil {
+		return err
+	}
+
+	request := &do.NfsAccessPointCreateRequest{
+		Name:  name,
+		Path:  path,
+		VpcID: vpcID,
+		AccessPolicy: do.NfsAccessPointPolicy{
+			Anonuid:                    anonUID,
+			Anongid:                    anonGID,
+			Protocols:                  normalizeProtocols(protocols),
+			SquashConfig:               strings.ToUpper(squashConfig),
+			IdentityEnforcementEnabled: identityEnforcementEnabled,
+		},
+	}
+
+	resp, err := c.Nfs().CreateAccessPoint(shareID, request)
+	if err != nil {
+		return err
+	}
+
+	item := &displayers.NfsAction{NfsActions: []do.NfsAction{{NfsAction: resp.Action}}}
+	return c.Display(item)
+}
+
+func nfsAccessPointGet(c *CmdConfig) error {
+	id, err := c.Doit.GetString(c.NS, "id")
+	if err != nil {
+		return err
+	}
+
+	ap, err := c.Nfs().GetAccessPoint(id)
+	if err != nil {
+		return err
+	}
+
+	return displayNfsAccessPoints(c, *ap)
+}
+
+func nfsAccessPointList(c *CmdConfig) error {
+	shareID, err := c.Doit.GetString(c.NS, "share-id")
+	if err != nil {
+		return err
+	}
+
+	status, err := c.Doit.GetString(c.NS, "status")
+	if err != nil {
+		return err
+	}
+
+	accessPoints, err := c.Nfs().ListAccessPoints(shareID, strings.ToUpper(status))
+	if err != nil {
+		return err
+	}
+
+	return displayNfsAccessPoints(c, accessPoints...)
+}
+
+func nfsAccessPointDelete(c *CmdConfig) error {
+	id, err := c.Doit.GetString(c.NS, "id")
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.Nfs().DeleteAccessPoint(id)
+	if err != nil {
+		return err
+	}
+
+	item := &displayers.NfsAction{NfsActions: []do.NfsAction{{NfsAction: resp.Action}}}
+	return c.Display(item)
+}
+
+func normalizeProtocols(protocols []string) []string {
+	out := make([]string, 0, len(protocols))
+	for _, p := range protocols {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			out = append(out, strings.ToUpper(trimmed))
+		}
+	}
+	if len(out) == 0 {
+		return []string{"NFS4"}
+	}
+	return out
+}
+
 func displayNfs(c *CmdConfig, shares ...do.Nfs) error {
 	item := &displayers.Nfs{NfsShares: shares}
 	return c.Display(item)
@@ -522,5 +695,10 @@ func displayNfs(c *CmdConfig, shares ...do.Nfs) error {
 
 func displayNfsSnapshots(c *CmdConfig, snapshots ...do.NfsSnapshot) error {
 	item := &displayers.NfsSnapshot{NfsSnapshots: snapshots}
+	return c.Display(item)
+}
+
+func displayNfsAccessPoints(c *CmdConfig, accessPoints ...do.NfsAccessPoint) error {
+	item := &displayers.NfsAccessPoint{NfsAccessPoints: accessPoints}
 	return c.Display(item)
 }
