@@ -41,6 +41,7 @@ type NfsAccessPoint struct {
 	UpdatedAt    string               `json:"updated_at"`
 	IsDefault    bool                 `json:"is_default"`
 	VpcID        *string              `json:"vpc_id,omitempty"`
+	VpcIDs       []string             `json:"vpc_ids,omitempty"`
 }
 
 // NfsAccessPointPolicy describes access policy settings for an access point.
@@ -281,7 +282,18 @@ func nfsAccessPointFromGodo(ap *godo.NfsAccessPoint) *NfsAccessPoint {
 		UpdatedAt: ap.UpdatedAt,
 		IsDefault: ap.IsDefault,
 		VpcID:     ap.VpcID,
+		VpcIDs:    nfsAccessPointVpcIDs(ap),
 	}
+}
+
+func nfsAccessPointVpcIDs(ap *godo.NfsAccessPoint) []string {
+	if len(ap.VpcIDs) > 0 {
+		return ap.VpcIDs
+	}
+	if ap.VpcID != nil && *ap.VpcID != "" {
+		return []string{*ap.VpcID}
+	}
+	return nil
 }
 
 func nfsAccessPointActionResponseFromGodo(resp *godo.NfsAccessPointActionResponse) *NfsAccessPointActionResponse {

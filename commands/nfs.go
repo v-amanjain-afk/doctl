@@ -134,9 +134,11 @@ func nfsAccessPoints() *Command {
 
 	get := CmdBuilder(cmd, nfsAccessPointGet, "get [flags]", "Get an NFS access point", "Get an NFS access point by ID.", Writer, displayerType(&displayers.NfsAccessPoint{}), overrideCmdNS("nfs-access-point"))
 	AddStringFlag(get, "id", "", "", "the ID of the NFS access point", requiredOpt())
+	AddStringFlag(get, "region", "r", "", "the region where the NFS share resides")
 
 	list := CmdBuilder(cmd, nfsAccessPointList, "list [flags]", "List NFS access points for a share", "List NFS access points for a share.", Writer, aliasOpt("ls"), displayerType(&displayers.NfsAccessPoint{}), overrideCmdNS("nfs-access-point"))
 	AddStringFlag(list, "share-id", "", "", "the ID of the NFS share", requiredOpt())
+	AddStringFlag(list, "region", "r", "", "the region where the NFS share resides")
 	AddStringFlag(list, "status", "", "", "optional status filter (ACCESS_POINT_CREATING, ACCESS_POINT_ACTIVE, ACCESS_POINT_FAILED, ACCESS_POINT_DELETED)")
 
 	deleteCmd := CmdBuilder(cmd, nfsAccessPointDelete, "delete [flags]", "Delete an NFS access point", "Delete an NFS access point by ID.", Writer, aliasOpt("rm"), displayerType(&displayers.NfsAction{}), overrideCmdNS("nfs-access-point"))
@@ -637,7 +639,14 @@ func nfsAccessPointGet(c *CmdConfig) error {
 		return err
 	}
 
-	return displayNfsAccessPoints(c, *ap)
+	region, _ := c.Doit.GetString(c.NS, "region")
+
+	accessPoints, err := enrichNfsAccessPointsForShare(c, ap.ShareID, region, []do.NfsAccessPoint{*ap})
+	if err != nil {
+		return err
+	}
+
+	return displayNfsAccessPoints(c, accessPoints...)
 }
 
 func nfsAccessPointList(c *CmdConfig) error {
@@ -645,6 +654,8 @@ func nfsAccessPointList(c *CmdConfig) error {
 	if err != nil {
 		return err
 	}
+
+	region, _ := c.Doit.GetString(c.NS, "region")
 
 	status, err := c.Doit.GetString(c.NS, "status")
 	if err != nil {
@@ -656,7 +667,40 @@ func nfsAccessPointList(c *CmdConfig) error {
 		return err
 	}
 
+	accessPoints, err = enrichNfsAccessPointsForShare(c, shareID, region, accessPoints)
+	if err != nil {
+		return err
+	}
+
 	return displayNfsAccessPoints(c, accessPoints...)
+}
+
+func enrichNfsAccessPointsForShare(c *CmdConfig, shareID, region string, accessPoints []do.NfsAccessPoint) ([]do.NfsAccessPoint, error) {
+	needsShareVPCs := false
+	for _, ap := range accessPoints {
+		if ap.IsDefault {
+			needsShareVPCs = true
+			break
+		}
+	}
+	if !needsShareVPCs {
+		return accessPoints, nil
+	}
+
+	share, err := c.Nfs().Get(shareID, region)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]do.NfsAccessPoint, len(accessPoints))
+	for i, ap := range accessPoints {
+		out[i] = ap
+		if ap.IsDefault {
+			out[i].VpcIDs = share.VpcIDs
+		}
+	}
+
+	return out, nil
 }
 
 func nfsAccessPointDelete(c *CmdConfig) error {

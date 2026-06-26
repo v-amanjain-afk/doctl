@@ -72,6 +72,17 @@ var (
 		},
 		CreatedAt: "2026-06-17T10:00:00Z",
 		UpdatedAt: "2026-06-17T10:00:00Z",
+		VpcIDs:    []string{"vpc-1234"},
+	}
+	testDefaultNfsAccessPoint = do.NfsAccessPoint{
+		ID:        "ap-default",
+		Name:      "default",
+		ShareID:   testId,
+		Path:      "/",
+		Status:    "ACCESS_POINT_ACTIVE",
+		IsDefault: true,
+		CreatedAt: "2026-06-17T10:00:00Z",
+		UpdatedAt: "2026-06-17T10:00:00Z",
 	}
 )
 
@@ -124,11 +135,31 @@ func TestRunNfsAccessPointGet(t *testing.T) {
 	})
 }
 
+func TestRunNfsAccessPointGetDefault(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.nfs.EXPECT().GetAccessPoint("ap-default").Return(&testDefaultNfsAccessPoint, nil)
+		tm.nfs.EXPECT().Get(testId, "").Return(&testNfs, nil)
+		config.Doit.Set(config.NS, "id", "ap-default")
+		err := nfsAccessPointGet(config)
+		require.NoError(t, err)
+	})
+}
+
 func TestRunNfsAccessPointList(t *testing.T) {
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		tm.nfs.EXPECT().ListAccessPoints(testId, "ACCESS_POINT_ACTIVE").Return([]do.NfsAccessPoint{testNfsAccessPoint}, nil)
 		config.Doit.Set(config.NS, "share-id", testId)
 		config.Doit.Set(config.NS, "status", "access_point_active")
+		err := nfsAccessPointList(config)
+		require.NoError(t, err)
+	})
+}
+
+func TestRunNfsAccessPointListDefault(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.nfs.EXPECT().ListAccessPoints(testId, "").Return([]do.NfsAccessPoint{testDefaultNfsAccessPoint, testNfsAccessPoint}, nil)
+		tm.nfs.EXPECT().Get(testId, "").Return(&testNfs, nil)
+		config.Doit.Set(config.NS, "share-id", testId)
 		err := nfsAccessPointList(config)
 		require.NoError(t, err)
 	})

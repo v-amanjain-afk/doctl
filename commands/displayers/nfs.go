@@ -171,7 +171,7 @@ func (n *NfsAccessPoint) JSON(out io.Writer) error {
 
 func (n *NfsAccessPoint) Cols() []string {
 	return []string{
-		"ID", "Name", "ShareID", "Path", "Status", "IsDefault", "VpcID", "CreatedAt", "UpdatedAt",
+		"ID", "Name", "ShareID", "Path", "Status", "IsDefault", "VpcIDs", "CreatedAt", "UpdatedAt",
 	}
 }
 
@@ -183,7 +183,7 @@ func (n *NfsAccessPoint) ColMap() map[string]string {
 		"Path":      "Path",
 		"Status":    "Status",
 		"IsDefault": "Default",
-		"VpcID":     "VPC ID",
+		"VpcIDs":    "VPC IDs",
 		"CreatedAt": "Created At",
 		"UpdatedAt": "Updated At",
 	}
@@ -192,11 +192,6 @@ func (n *NfsAccessPoint) ColMap() map[string]string {
 func (n *NfsAccessPoint) KV() []map[string]any {
 	out := make([]map[string]any, 0, len(n.NfsAccessPoints))
 	for _, ap := range n.NfsAccessPoints {
-		vpcID := ""
-		if ap.VpcID != nil {
-			vpcID = *ap.VpcID
-		}
-
 		m := map[string]any{
 			"ID":        ap.ID,
 			"Name":      ap.Name,
@@ -204,7 +199,7 @@ func (n *NfsAccessPoint) KV() []map[string]any {
 			"Path":      ap.Path,
 			"Status":    ap.Status,
 			"IsDefault": ap.IsDefault,
-			"VpcID":     vpcID,
+			"VpcIDs":    strings.Join(ap.VpcIDs, ", "),
 			"CreatedAt": ap.CreatedAt,
 			"UpdatedAt": ap.UpdatedAt,
 		}
