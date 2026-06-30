@@ -78,18 +78,18 @@ doctl nfs list --region 'atl1' --format ID,Name,Size,Status`
 	cmdNfsAttach := CmdBuilder(cmd, nfsAttach, "attach [flags]", "Attach an NFS share to a VPC", "Attaches an NFS share to a VPC with the given ID and region.", Writer)
 	AddStringFlag(cmdNfsAttach, "id", "", "", "the ID of the NFS share", requiredOpt())
 	AddStringFlag(cmdNfsAttach, "region", "r", "", "the region where the NFS share resides", requiredOpt())
-	AddStringFlag(cmdNfsAttach, "vpc_id", "", "", "the id of the VPC we want to attach NFS share to", requiredOpt())
+	AddStringFlag(cmdNfsAttach, "vpc-id", "", "", "the id of the VPC we want to attach NFS share to", requiredOpt())
 	AddBoolFlag(cmdNfsAttach, doctl.ArgCommandWait, "", false, "Wait for action to complete")
 	cmdNfsAttach.Example =
-		`doctl nfs attach --region 'atl1' --id b050990d-4337-4a9d-9c8d-9f759a83936a --vpc_id example-vpc-id`
+		`doctl nfs attach --region 'atl1' --id b050990d-4337-4a9d-9c8d-9f759a83936a --vpc-id example-vpc-id`
 
 	cmdNfsDetach := CmdBuilder(cmd, nfsDetach, "detach [flags]", "Detach an NFS share from a VPC", "Detaches an NFS share from a VPC with the given ID and region.", Writer)
 	AddStringFlag(cmdNfsDetach, "id", "", "", "the ID of the NFS share", requiredOpt())
 	AddStringFlag(cmdNfsDetach, "region", "r", "", "the region where the NFS share resides", requiredOpt())
-	AddStringFlag(cmdNfsDetach, "vpc_id", "", "", "the id of the VPC we want to detach NFS share from", requiredOpt())
+	AddStringFlag(cmdNfsDetach, "vpc-id", "", "", "the id of the VPC we want to detach NFS share from", requiredOpt())
 	AddBoolFlag(cmdNfsDetach, doctl.ArgCommandWait, "", false, "Wait for action to complete")
 	cmdNfsDetach.Example =
-		`doctl nfs detach --region 'atl1' --id b050990d-4337-4a9d-9c8d-9f759a83936a --vpc_id example-vpc-id`
+		`doctl nfs detach --region 'atl1' --id b050990d-4337-4a9d-9c8d-9f759a83936a --vpc-id example-vpc-id`
 
 	cmdNfsReassign := CmdBuilder(cmd, nfsReassign, "reassign [flags]", "Reassign an NFS share between VPCs", "Reassigns an NFS share from one VPC to another with the given ID.", Writer)
 	AddStringFlag(cmdNfsReassign, "id", "", "", "the ID of the NFS share", requiredOpt())
@@ -134,11 +134,9 @@ func nfsAccessPoints() *Command {
 
 	get := CmdBuilder(cmd, nfsAccessPointGet, "get [flags]", "Get an NFS access point", "Get an NFS access point by ID.", Writer, displayerType(&displayers.NfsAccessPoint{}), overrideCmdNS("nfs-access-point"))
 	AddStringFlag(get, "id", "", "", "the ID of the NFS access point", requiredOpt())
-	AddStringFlag(get, "region", "r", "", "the region where the NFS share resides")
 
 	list := CmdBuilder(cmd, nfsAccessPointList, "list [flags]", "List NFS access points for a share", "List NFS access points for a share.", Writer, aliasOpt("ls"), displayerType(&displayers.NfsAccessPoint{}), overrideCmdNS("nfs-access-point"))
 	AddStringFlag(list, "share-id", "", "", "the ID of the NFS share", requiredOpt())
-	AddStringFlag(list, "region", "r", "", "the region where the NFS share resides")
 	AddStringFlag(list, "status", "", "", "optional status filter (ACCESS_POINT_CREATING, ACCESS_POINT_ACTIVE, ACCESS_POINT_FAILED, ACCESS_POINT_DELETED)")
 
 	deleteCmd := CmdBuilder(cmd, nfsAccessPointDelete, "delete [flags]", "Delete an NFS access point", "Delete an NFS access point by ID.", Writer, aliasOpt("rm"), displayerType(&displayers.NfsAction{}), overrideCmdNS("nfs-access-point"))
@@ -406,7 +404,7 @@ func nfsAttach(c *CmdConfig) error {
 
 	region, _ := c.Doit.GetString(c.NS, "region")
 
-	vpcIdStr, err := c.Doit.GetString(c.NS, "vpc_id")
+	vpcIdStr, err := c.Doit.GetString(c.NS, "vpc-id")
 	if err != nil {
 		return err
 	}
@@ -444,7 +442,7 @@ func nfsDetach(c *CmdConfig) error {
 	}
 
 	region, _ := c.Doit.GetString(c.NS, "region")
-	vpcIdStr, err := c.Doit.GetString(c.NS, "vpc_id")
+	vpcIdStr, err := c.Doit.GetString(c.NS, "vpc-id")
 	if err != nil {
 		return err
 	}
@@ -639,9 +637,7 @@ func nfsAccessPointGet(c *CmdConfig) error {
 		return err
 	}
 
-	region, _ := c.Doit.GetString(c.NS, "region")
-
-	accessPoints, err := enrichNfsAccessPointsForShare(c, ap.ShareID, region, []do.NfsAccessPoint{*ap})
+	accessPoints, err := enrichNfsAccessPointsForShare(c, ap.ShareID, []do.NfsAccessPoint{*ap})
 	if err != nil {
 		return err
 	}
@@ -655,8 +651,6 @@ func nfsAccessPointList(c *CmdConfig) error {
 		return err
 	}
 
-	region, _ := c.Doit.GetString(c.NS, "region")
-
 	status, err := c.Doit.GetString(c.NS, "status")
 	if err != nil {
 		return err
@@ -667,7 +661,7 @@ func nfsAccessPointList(c *CmdConfig) error {
 		return err
 	}
 
-	accessPoints, err = enrichNfsAccessPointsForShare(c, shareID, region, accessPoints)
+	accessPoints, err = enrichNfsAccessPointsForShare(c, shareID, accessPoints)
 	if err != nil {
 		return err
 	}
@@ -675,7 +669,10 @@ func nfsAccessPointList(c *CmdConfig) error {
 	return displayNfsAccessPoints(c, accessPoints...)
 }
 
-func enrichNfsAccessPointsForShare(c *CmdConfig, shareID, region string, accessPoints []do.NfsAccessPoint) ([]do.NfsAccessPoint, error) {
+// enrichNfsAccessPointsForShare fills VPC IDs on the default access point from the
+// parent share. The access point API does not return VPCs for the default "/"
+// export, and the share can be looked up by ID without a region.
+func enrichNfsAccessPointsForShare(c *CmdConfig, shareID string, accessPoints []do.NfsAccessPoint) ([]do.NfsAccessPoint, error) {
 	needsShareVPCs := false
 	for _, ap := range accessPoints {
 		if ap.IsDefault {
@@ -687,7 +684,7 @@ func enrichNfsAccessPointsForShare(c *CmdConfig, shareID, region string, accessP
 		return accessPoints, nil
 	}
 
-	share, err := c.Nfs().Get(shareID, region)
+	share, err := c.Nfs().Get(shareID, "")
 	if err != nil {
 		return nil, err
 	}

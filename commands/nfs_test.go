@@ -539,7 +539,7 @@ func TestRunNfsAttach(t *testing.T) {
 
 				config.Doit.Set(config.NS, "id", tc.id)
 				config.Doit.Set(config.NS, "region", tc.region)
-				config.Doit.Set(config.NS, "vpc_id", tc.vpcID)
+				config.Doit.Set(config.NS, "vpc-id", tc.vpcID)
 				config.Doit.Set(config.NS, "wait", tc.wait)
 
 				err := nfsAttach(config)
@@ -593,7 +593,7 @@ func TestRunNfsDetach(t *testing.T) {
 
 				config.Doit.Set(config.NS, "id", tc.id)
 				config.Doit.Set(config.NS, "region", tc.region)
-				config.Doit.Set(config.NS, "vpc_id", tc.vpcID)
+				config.Doit.Set(config.NS, "vpc-id", tc.vpcID)
 				config.Doit.Set(config.NS, "wait", tc.wait)
 
 				err := nfsDetach(config)
