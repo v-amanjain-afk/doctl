@@ -81,6 +81,11 @@ func TestVPCNATGatewayCreate(t *testing.T) {
 					VpcUUID: "05790d02-c7e0-47d6-a917-5b4cf68cf5b7",
 				},
 			},
+			Egresses: &godo.Egresses{
+				PublicGateways: []*godo.PublicGateway{
+					{IP: "203.0.113.10"},
+				},
+			},
 			UDPTimeoutSeconds:  30,
 			ICMPTimeoutSeconds: 30,
 			TCPTimeoutSeconds:  30,
@@ -98,6 +103,7 @@ func TestVPCNATGatewayCreate(t *testing.T) {
 		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayICMPTimeout, "30")
 		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayTCPTimeout, "30")
 		c.Doit.Set(c.NS, doctl.ArgProjectID, "0b0f3f3c-1d2e-4e5f-8f3c-0b0f3f3c1d2e")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayIP, "203.0.113.10")
 
 		err := RunVPCNATGatewayCreate(c)
 		assert.NoError(t, err)
@@ -136,6 +142,79 @@ func TestVPCNATGatewayUpdate(t *testing.T) {
 		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayTCPTimeout, "50")
 
 		err := RunVPCNATGatewayUpdate(c)
+		assert.NoError(t, err)
+	})
+}
+
+func TestVPCNATGatewayCreateWithSubnetUUID(t *testing.T) {
+	withTestClient(t, func(c *CmdConfig, tm *tcMocks) {
+		createReq := godo.VPCNATGatewayRequest{
+			Name:   "test-vpc-nat-gateway-01",
+			Type:   "PUBLIC",
+			Region: "nyc3",
+			Size:   1,
+			VPCs: []*godo.IngressVPC{
+				{
+					VpcUUID:        "05790d02-c7e0-47d6-a917-5b4cf68cf5b7",
+					SubnetUUID:     "3d6f6fdc-8b7e-49fd-a3c2-0d73ec4e40b4",
+					DefaultGateway: true,
+				},
+			},
+			UDPTimeoutSeconds:  30,
+			ICMPTimeoutSeconds: 30,
+			TCPTimeoutSeconds:  30,
+			ProjectID:          "0b0f3f3c-1d2e-4e5f-8f3c-0b0f3f3c1d2e",
+		}
+
+		tm.vpcNatGateways.EXPECT().Create(&createReq).Return(testVPCNATGateways[0], nil)
+
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayName, "test-vpc-nat-gateway-01")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayType, "PUBLIC")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayRegion, "nyc3")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewaySize, "1")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayVPCs, "05790d02-c7e0-47d6-a917-5b4cf68cf5b7:default:3d6f6fdc-8b7e-49fd-a3c2-0d73ec4e40b4")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayUDPTimeout, "30")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayICMPTimeout, "30")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayTCPTimeout, "30")
+		c.Doit.Set(c.NS, doctl.ArgProjectID, "0b0f3f3c-1d2e-4e5f-8f3c-0b0f3f3c1d2e")
+
+		err := RunVPCNATGatewayCreate(c)
+		assert.NoError(t, err)
+	})
+}
+
+func TestVPCNATGatewayCreateWithSubnetUUIDNoDefault(t *testing.T) {
+	withTestClient(t, func(c *CmdConfig, tm *tcMocks) {
+		createReq := godo.VPCNATGatewayRequest{
+			Name:   "test-vpc-nat-gateway-01",
+			Type:   "PUBLIC",
+			Region: "nyc3",
+			Size:   1,
+			VPCs: []*godo.IngressVPC{
+				{
+					VpcUUID:    "05790d02-c7e0-47d6-a917-5b4cf68cf5b7",
+					SubnetUUID: "3d6f6fdc-8b7e-49fd-a3c2-0d73ec4e40b4",
+				},
+			},
+			UDPTimeoutSeconds:  30,
+			ICMPTimeoutSeconds: 30,
+			TCPTimeoutSeconds:  30,
+			ProjectID:          "0b0f3f3c-1d2e-4e5f-8f3c-0b0f3f3c1d2e",
+		}
+
+		tm.vpcNatGateways.EXPECT().Create(&createReq).Return(testVPCNATGateways[0], nil)
+
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayName, "test-vpc-nat-gateway-01")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayType, "PUBLIC")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayRegion, "nyc3")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewaySize, "1")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayVPCs, "05790d02-c7e0-47d6-a917-5b4cf68cf5b7:3d6f6fdc-8b7e-49fd-a3c2-0d73ec4e40b4")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayUDPTimeout, "30")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayICMPTimeout, "30")
+		c.Doit.Set(c.NS, doctl.ArgVPCNATGatewayTCPTimeout, "30")
+		c.Doit.Set(c.NS, doctl.ArgProjectID, "0b0f3f3c-1d2e-4e5f-8f3c-0b0f3f3c1d2e")
+
+		err := RunVPCNATGatewayCreate(c)
 		assert.NoError(t, err)
 	})
 }

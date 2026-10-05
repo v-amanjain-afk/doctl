@@ -5,8 +5,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/digitalocean/doctl/do"
 	"github.com/digitalocean/godo"
+
+	"github.com/digitalocean/doctl/do"
 )
 
 type KubernetesClusters struct {
@@ -52,10 +53,14 @@ func (clusters *KubernetesClusters) Cols() []string {
 		"Autoscaler.UnneededTime",
 		"Autoscaler.Expanders",
 		"RoutingAgent",
+		"PeerToPeerOciRegistryPlugin",
+		"NfsCsiPlugin",
 		"CorednsAutoscaler",
 		"AmdGpuDevicePlugin",
 		"AmdGpuDeviceMetricsExporterPlugin",
 		"NvidiaGpuDevicePlugin",
+		"NvidiaGpuDraDriver",
+		"AmdGpuDraDriver",
 		"RDMASharedDevicePlugin",
 	}
 }
@@ -92,10 +97,14 @@ func (clusters *KubernetesClusters) ColMap() map[string]string {
 		"Autoscaler.UnneededTime":           "Autoscaler Scale Down Unneeded Time",
 		"Autoscaler.Expanders":              "Autoscaler Custom Expanders",
 		"RoutingAgent":                      "Routing Agent",
+		"PeerToPeerOciRegistryPlugin":       "Peer-to-peer OCI registry Plugin",
+		"NfsCsiPlugin":                      "NFS CSI Plugin",
 		"CorednsAutoscaler":                 "CoreDNS Autoscaler",
 		"AmdGpuDevicePlugin":                "AMD GPU Device Plugin",
 		"AmdGpuDeviceMetricsExporterPlugin": "AMD GPU Device Metrics Exporter Plugin",
 		"NvidiaGpuDevicePlugin":             "NVIDIA GPU Device Plugin",
+		"NvidiaGpuDraDriver":                "NVIDIA GPU DRA Driver",
+		"AmdGpuDraDriver":                   "AMD GPU DRA Driver",
 		"RDMASharedDevicePlugin":            "RDMA Shared Device Plugin",
 	}
 }
@@ -133,10 +142,14 @@ func (clusters *KubernetesClusters) KV() []map[string]any {
 			"Autoscaler.UnneededTime":           "",
 			"Autoscaler.Expanders":              "",
 			"RoutingAgent":                      cluster.RoutingAgent != nil && *cluster.RoutingAgent.Enabled,
+			"PeerToPeerOciRegistryPlugin":       cluster.P2pOciRegistryPlugin != nil && *cluster.P2pOciRegistryPlugin.Enabled,
+			"NfsCsiPlugin":                      cluster.NfsCsiPlugin != nil && *cluster.NfsCsiPlugin.Enabled,
 			"CorednsAutoscaler":                 cluster.CorednsAutoscaler != nil && *cluster.CorednsAutoscaler.Enabled,
 			"AmdGpuDevicePlugin":                cluster.AmdGpuDevicePlugin != nil && *cluster.AmdGpuDevicePlugin.Enabled,
 			"AmdGpuDeviceMetricsExporterPlugin": cluster.AmdGpuDeviceMetricsExporterPlugin != nil && *cluster.AmdGpuDeviceMetricsExporterPlugin.Enabled,
 			"NvidiaGpuDevicePlugin":             cluster.NvidiaGpuDevicePlugin != nil && *cluster.NvidiaGpuDevicePlugin.Enabled,
+			"NvidiaGpuDraDriver":                cluster.NvidiaGpuDraDriver != nil && *cluster.NvidiaGpuDraDriver.Enabled,
+			"AmdGpuDraDriver":                   cluster.AmdGpuDraDriver != nil && *cluster.AmdGpuDraDriver.Enabled,
 			"RDMASharedDevicePlugin":            cluster.RdmaSharedDevicePlugin != nil && *cluster.RdmaSharedDevicePlugin.Enabled,
 		}
 

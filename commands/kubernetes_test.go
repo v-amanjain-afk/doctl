@@ -58,6 +58,12 @@ var (
 			RoutingAgent: &godo.KubernetesRoutingAgent{
 				Enabled: boolPtr(true),
 			},
+			P2pOciRegistryPlugin: &godo.KubernetesP2pOciRegistry{
+				Enabled: boolPtr(true),
+			},
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(true),
+			},
 			AmdGpuDevicePlugin: &godo.KubernetesAmdGpuDevicePlugin{
 				Enabled: boolPtr(true),
 			},
@@ -67,12 +73,23 @@ var (
 			NvidiaGpuDevicePlugin: &godo.KubernetesNvidiaGpuDevicePlugin{
 				Enabled: boolPtr(true),
 			},
+			NvidiaGpuDraDriver: &godo.KubernetesNvidiaGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDraDriver: &godo.KubernetesAmdGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
 			RdmaSharedDevicePlugin: &godo.KubernetesRdmaSharedDevicePlugin{
 				Enabled: boolPtr(true),
 			},
 			CorednsAutoscaler: &godo.KubernetesCorednsAutoscaler{
 				Enabled: boolPtr(true),
 			},
+			SSO: &godo.KubernetesClusterSSO{
+				Enabled:  true,
+				Required: false,
+			},
+			IsolatedWorkers: true,
 		},
 	}
 
@@ -726,6 +743,12 @@ func TestKubernetesCreate(t *testing.T) {
 			RoutingAgent: &godo.KubernetesRoutingAgent{
 				Enabled: boolPtr(true),
 			},
+			P2pOciRegistryPlugin: &godo.KubernetesP2pOciRegistry{
+				Enabled: boolPtr(true),
+			},
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(true),
+			},
 			AmdGpuDevicePlugin: &godo.KubernetesAmdGpuDevicePlugin{
 				Enabled: boolPtr(true),
 			},
@@ -733,6 +756,12 @@ func TestKubernetesCreate(t *testing.T) {
 				Enabled: boolPtr(true),
 			},
 			NvidiaGpuDevicePlugin: &godo.KubernetesNvidiaGpuDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			NvidiaGpuDraDriver: &godo.KubernetesNvidiaGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDraDriver: &godo.KubernetesAmdGpuDraDriver{
 				Enabled: boolPtr(true),
 			},
 			RdmaSharedDevicePlugin: &godo.KubernetesRdmaSharedDevicePlugin{
@@ -745,6 +774,7 @@ func TestKubernetesCreate(t *testing.T) {
 				Enabled:  true,
 				Required: false,
 			},
+			IsolatedWorkers: true,
 		}
 		tm.kubernetes.EXPECT().Create(&r).Return(&testCluster, nil)
 
@@ -772,11 +802,16 @@ func TestKubernetesCreate(t *testing.T) {
 		config.Doit.Set(config.NS, doctl.ArgClusterAutoscalerScaleDownUnneededTime, testCluster.ClusterAutoscalerConfiguration.ScaleDownUnneededTime)
 
 		config.Doit.Set(config.NS, doctl.ArgEnableRoutingAgent, testCluster.RoutingAgent.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnablePeerToPeerOciRegistryPlugin, testCluster.P2pOciRegistryPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNfsCsiPlugin, testCluster.NfsCsiPlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDevicePlugin, testCluster.AmdGpuDevicePlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDeviceMetricsExporterPlugin, testCluster.AmdGpuDeviceMetricsExporterPlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDevicePlugin, testCluster.NvidiaGpuDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDraDriver, testCluster.NvidiaGpuDraDriver.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDraDriver, testCluster.AmdGpuDraDriver.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableRDMASharedDevicePlugin, testCluster.RdmaSharedDevicePlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableCorednsAutoscaler, testCluster.CorednsAutoscaler.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgIsolatedWorkers, true)
 		config.Doit.Set(config.NS, doctl.ArgKubernetesEnableSSO, true)
 		config.Doit.Set(config.NS, doctl.ArgKubernetesRequireSSO, false)
 		config.Doit.Set(config.NS, doctl.ArgKubernetesSSOIssuerURL, "https://issuer.example")
@@ -861,6 +896,83 @@ func TestKubernetesCreate(t *testing.T) {
 		err := testK8sCmdService().RunKubernetesClusterCreate("s-1vcpu-2gb", 3)(config)
 		assert.NoError(t, err)
 	})
+
+	// Test NFS CSI plugin omitted: when the flag is not set, nfs_csi_plugin is left unset
+	// so the API can apply its default.
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		clusterName := "nfs-omit-cluster"
+		r := godo.KubernetesClusterCreateRequest{
+			Name:        clusterName,
+			RegionSlug:  "sfo2",
+			VersionSlug: "1.13.0",
+			NodePools: []*godo.KubernetesNodePoolCreateRequest{
+				{
+					Name:  clusterName + "-default-pool",
+					Size:  "s-1vcpu-2gb",
+					Count: 3,
+				},
+			},
+			MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
+				StartTime: "00:00",
+				Day:       godo.KubernetesMaintenanceDayAny,
+			},
+			AutoUpgrade:  false,
+			SurgeUpgrade: true,
+			NfsCsiPlugin: nil,
+		}
+		tm.kubernetes.EXPECT().Create(&r).Return(&testCluster, nil)
+
+		config.Args = append(config.Args, clusterName)
+		config.Doit.Set(config.NS, doctl.ArgRegionSlug, "sfo2")
+		config.Doit.Set(config.NS, doctl.ArgClusterVersionSlug, "1.13.0")
+		config.Doit.Set(config.NS, doctl.ArgSizeSlug, "s-1vcpu-2gb")
+		config.Doit.Set(config.NS, doctl.ArgNodePoolCount, 3)
+		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
+		config.Doit.Set(config.NS, doctl.ArgSurgeUpgrade, true)
+		// Do NOT set ArgEnableNfsCsiPlugin - simulates omitting --enable-nfs-csi-plugin
+
+		err := testK8sCmdService().RunKubernetesClusterCreate("s-1vcpu-2gb", 3)(config)
+		assert.NoError(t, err)
+	})
+
+	// Test NFS CSI plugin explicit false: --enable-nfs-csi-plugin=false is forwarded.
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		clusterName := "nfs-false-cluster"
+		r := godo.KubernetesClusterCreateRequest{
+			Name:        clusterName,
+			RegionSlug:  "sfo2",
+			VersionSlug: "1.13.0",
+			NodePools: []*godo.KubernetesNodePoolCreateRequest{
+				{
+					Name:  clusterName + "-default-pool",
+					Size:  "s-1vcpu-2gb",
+					Count: 3,
+				},
+			},
+			MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
+				StartTime: "00:00",
+				Day:       godo.KubernetesMaintenanceDayAny,
+			},
+			AutoUpgrade:  false,
+			SurgeUpgrade: true,
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(false),
+			},
+		}
+		tm.kubernetes.EXPECT().Create(&r).Return(&testCluster, nil)
+
+		config.Args = append(config.Args, clusterName)
+		config.Doit.Set(config.NS, doctl.ArgRegionSlug, "sfo2")
+		config.Doit.Set(config.NS, doctl.ArgClusterVersionSlug, "1.13.0")
+		config.Doit.Set(config.NS, doctl.ArgSizeSlug, "s-1vcpu-2gb")
+		config.Doit.Set(config.NS, doctl.ArgNodePoolCount, 3)
+		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
+		config.Doit.Set(config.NS, doctl.ArgSurgeUpgrade, true)
+		config.Doit.Set(config.NS, doctl.ArgEnableNfsCsiPlugin, false)
+
+		err := testK8sCmdService().RunKubernetesClusterCreate("s-1vcpu-2gb", 3)(config)
+		assert.NoError(t, err)
+	})
 }
 
 func TestKubernetesUpdate(t *testing.T) {
@@ -889,6 +1001,12 @@ func TestKubernetesUpdate(t *testing.T) {
 			RoutingAgent: &godo.KubernetesRoutingAgent{
 				Enabled: boolPtr(true),
 			},
+			P2pOciRegistryPlugin: &godo.KubernetesP2pOciRegistry{
+				Enabled: boolPtr(true),
+			},
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(true),
+			},
 			AmdGpuDevicePlugin: &godo.KubernetesAmdGpuDevicePlugin{
 				Enabled: boolPtr(true),
 			},
@@ -896,6 +1014,12 @@ func TestKubernetesUpdate(t *testing.T) {
 				Enabled: boolPtr(true),
 			},
 			NvidiaGpuDevicePlugin: &godo.KubernetesNvidiaGpuDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			NvidiaGpuDraDriver: &godo.KubernetesNvidiaGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDraDriver: &godo.KubernetesAmdGpuDraDriver{
 				Enabled: boolPtr(true),
 			},
 			RdmaSharedDevicePlugin: &godo.KubernetesRdmaSharedDevicePlugin{
@@ -923,9 +1047,13 @@ func TestKubernetesUpdate(t *testing.T) {
 		config.Doit.Set(config.NS, doctl.ArgClusterAutoscalerScaleDownUtilizationThreshold, testCluster.ClusterAutoscalerConfiguration.ScaleDownUtilizationThreshold)
 		config.Doit.Set(config.NS, doctl.ArgClusterAutoscalerScaleDownUnneededTime, testCluster.ClusterAutoscalerConfiguration.ScaleDownUnneededTime)
 		config.Doit.Set(config.NS, doctl.ArgEnableRoutingAgent, testCluster.RoutingAgent.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnablePeerToPeerOciRegistryPlugin, testCluster.P2pOciRegistryPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNfsCsiPlugin, testCluster.NfsCsiPlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDevicePlugin, testCluster.AmdGpuDevicePlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDeviceMetricsExporterPlugin, testCluster.AmdGpuDeviceMetricsExporterPlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDevicePlugin, testCluster.NvidiaGpuDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDraDriver, testCluster.NvidiaGpuDraDriver.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDraDriver, testCluster.AmdGpuDraDriver.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableRDMASharedDevicePlugin, testCluster.RdmaSharedDevicePlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableCorednsAutoscaler, testCluster.CorednsAutoscaler.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgKubernetesEnableSSO, true)
@@ -961,6 +1089,12 @@ func TestKubernetesUpdate(t *testing.T) {
 			RoutingAgent: &godo.KubernetesRoutingAgent{
 				Enabled: boolPtr(true),
 			},
+			P2pOciRegistryPlugin: &godo.KubernetesP2pOciRegistry{
+				Enabled: boolPtr(true),
+			},
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(true),
+			},
 			AmdGpuDevicePlugin: &godo.KubernetesAmdGpuDevicePlugin{
 				Enabled: boolPtr(true),
 			},
@@ -968,6 +1102,12 @@ func TestKubernetesUpdate(t *testing.T) {
 				Enabled: boolPtr(true),
 			},
 			NvidiaGpuDevicePlugin: &godo.KubernetesNvidiaGpuDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			NvidiaGpuDraDriver: &godo.KubernetesNvidiaGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDraDriver: &godo.KubernetesAmdGpuDraDriver{
 				Enabled: boolPtr(true),
 			},
 			RdmaSharedDevicePlugin: &godo.KubernetesRdmaSharedDevicePlugin{
@@ -996,14 +1136,70 @@ func TestKubernetesUpdate(t *testing.T) {
 		config.Doit.Set(config.NS, doctl.ArgClusterAutoscalerScaleDownUtilizationThreshold, testCluster.ClusterAutoscalerConfiguration.ScaleDownUtilizationThreshold)
 		config.Doit.Set(config.NS, doctl.ArgClusterAutoscalerScaleDownUnneededTime, testCluster.ClusterAutoscalerConfiguration.ScaleDownUnneededTime)
 		config.Doit.Set(config.NS, doctl.ArgEnableRoutingAgent, testCluster.RoutingAgent.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnablePeerToPeerOciRegistryPlugin, testCluster.P2pOciRegistryPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNfsCsiPlugin, testCluster.NfsCsiPlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDevicePlugin, testCluster.AmdGpuDevicePlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDeviceMetricsExporterPlugin, testCluster.AmdGpuDeviceMetricsExporterPlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDevicePlugin, testCluster.NvidiaGpuDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDraDriver, testCluster.NvidiaGpuDraDriver.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDraDriver, testCluster.AmdGpuDraDriver.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableRDMASharedDevicePlugin, testCluster.RdmaSharedDevicePlugin.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgEnableCorednsAutoscaler, testCluster.CorednsAutoscaler.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgKubernetesEnableSSO, true)
 		config.Doit.Set(config.NS, doctl.ArgKubernetesSSOIssuerURL, "https://issuer.example")
 		config.Doit.Set(config.NS, doctl.ArgKubernetesSSOClientID, "oidc-client-id")
+
+		err := testK8sCmdService().RunKubernetesClusterUpdate(config)
+		assert.NoError(t, err)
+	})
+
+	// Test NFS CSI plugin omitted: when the flag is not set, nfs_csi_plugin is left unset.
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		r := godo.KubernetesClusterUpdateRequest{
+			Name: testCluster.Name,
+			Tags: testCluster.Tags,
+			MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
+				StartTime: "00:00",
+				Day:       godo.KubernetesMaintenanceDayAny,
+			},
+			AutoUpgrade:  boolPtr(false),
+			NfsCsiPlugin: nil,
+		}
+		tm.kubernetes.EXPECT().Update(testCluster.ID, &r).Return(&testCluster, nil)
+
+		config.Args = append(config.Args, testCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgClusterName, testCluster.Name)
+		config.Doit.Set(config.NS, doctl.ArgTag, testCluster.Tags)
+		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
+		config.Doit.Set(config.NS, doctl.ArgAutoUpgrade, false)
+		// Do NOT set ArgEnableNfsCsiPlugin - simulates omitting --enable-nfs-csi-plugin
+
+		err := testK8sCmdService().RunKubernetesClusterUpdate(config)
+		assert.NoError(t, err)
+	})
+
+	// Test NFS CSI plugin explicit false: --enable-nfs-csi-plugin=false is forwarded.
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		r := godo.KubernetesClusterUpdateRequest{
+			Name: testCluster.Name,
+			Tags: testCluster.Tags,
+			MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
+				StartTime: "00:00",
+				Day:       godo.KubernetesMaintenanceDayAny,
+			},
+			AutoUpgrade: boolPtr(false),
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(false),
+			},
+		}
+		tm.kubernetes.EXPECT().Update(testCluster.ID, &r).Return(&testCluster, nil)
+
+		config.Args = append(config.Args, testCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgClusterName, testCluster.Name)
+		config.Doit.Set(config.NS, doctl.ArgTag, testCluster.Tags)
+		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
+		config.Doit.Set(config.NS, doctl.ArgAutoUpgrade, false)
+		config.Doit.Set(config.NS, doctl.ArgEnableNfsCsiPlugin, false)
 
 		err := testK8sCmdService().RunKubernetesClusterUpdate(config)
 		assert.NoError(t, err)

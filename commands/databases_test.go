@@ -2,6 +2,7 @@ package commands
 
 import (
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -226,6 +227,19 @@ var (
 					Name:            "max_connections",
 					Value:           "100",
 					DefaultValue:    "100",
+					RequiresRestart: false,
+				},
+			},
+		},
+	}
+
+	testAdvancedMySQLConfiguration = do.AdvancedMySQLConfig{
+		AdvancedMySQLConfig: &godo.AdvancedMySQLConfig{
+			MySQLParameters: []godo.AdvancedMySQLParameter{
+				{
+					Name:            "max_connections",
+					Value:           "151",
+					DefaultValue:    "151",
 					RequiresRestart: false,
 				},
 			},
@@ -609,6 +623,23 @@ func TestDatabasesDelete(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
+	// Successful with wait flag
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		notFound := &godo.ErrorResponse{
+			Response: &http.Response{StatusCode: http.StatusNotFound},
+			Message:  "not found",
+		}
+		tm.databases.EXPECT().Delete(testDBCluster.ID).Return(nil)
+		tm.databases.EXPECT().Get(testDBCluster.ID).Return(nil, notFound)
+
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgForce, "true")
+		config.Doit.Set(config.NS, doctl.ArgCommandWait, true)
+
+		err := RunDatabaseDelete(config)
+		assert.NoError(t, err)
+	})
+
 	// Error
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		tm.databases.EXPECT().Delete(testDBCluster.ID).Return(errTest)
@@ -684,8 +715,17 @@ func TestDatabaseResize(t *testing.T) {
 
 	// Success with wait flag
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		resized := do.Database{
+			Database: &godo.Database{
+				ID:             testDBCluster.ID,
+				SizeSlug:       testDBCluster.SizeSlug,
+				NumNodes:       testDBCluster.NumNodes,
+				StorageSizeMib: testDBCluster.StorageSizeMib,
+				Status:         "online",
+			},
+		}
 		tm.databases.EXPECT().Resize(testDBCluster.ID, r).Return(nil)
-		tm.databases.EXPECT().Get(testDBCluster.ID).Return(&testDBCluster, nil)
+		tm.databases.EXPECT().Get(testDBCluster.ID).Return(&resized, nil)
 		config.Args = append(config.Args, testDBCluster.ID)
 		config.Doit.Set(config.NS, doctl.ArgSizeSlug, testDBCluster.SizeSlug)
 		config.Doit.Set(config.NS, doctl.ArgDatabaseNumNodes, testDBCluster.NumNodes)
@@ -707,6 +747,92 @@ func TestDatabaseResize(t *testing.T) {
 		err := RunDatabaseResize(config)
 		assert.EqualError(t, err, errTest.Error())
 	})
+}
+
+func TestIsDatabaseResizeComplete(t *testing.T) {
+	req := &godo.DatabaseResizeRequest{
+		SizeSlug:       "db-s-16vcpu-64gb",
+		NumNodes:       2,
+		StorageSizeMib: 2048000,
+	}
+
+	tests := []struct {
+		name string
+		db   *do.Database
+		req  *godo.DatabaseResizeRequest
+		want bool
+	}{
+		{
+			name: "online with matching size nodes and storage",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "pg", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 2048000,
+			}},
+			req:  req,
+			want: true,
+		},
+		{
+			name: "still online with old size",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "pg", Status: "online", SizeSlug: "db-s-1vcpu-2gb", NumNodes: 2, StorageSizeMib: 2048000,
+			}},
+			req:  req,
+			want: false,
+		},
+		{
+			name: "resizing status even with new size",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "mysql", Status: "resizing", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 2048000,
+			}},
+			req:  req,
+			want: false,
+		},
+		{
+			name: "online matching size and nodes but storage not yet updated",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "pg", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 20480,
+			}},
+			req:  req,
+			want: false,
+		},
+		{
+			name: "storage omitted from request is not checked",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "pg", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 20480,
+			}},
+			req:  &godo.DatabaseResizeRequest{SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2},
+			want: true,
+		},
+		{
+			name: "online with wrong node count",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "pg", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 1, StorageSizeMib: 2048000,
+			}},
+			req:  req,
+			want: false,
+		},
+		{
+			name: "redis skips storage check",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "redis", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 0,
+			}},
+			req:  req,
+			want: true,
+		},
+		{
+			name: "valkey skips storage check",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "valkey", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 0,
+			}},
+			req:  req,
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isDatabaseResizeComplete(tt.db, tt.req))
+		})
+	}
 }
 
 func TestDatabaseListBackups(t *testing.T) {
@@ -1797,6 +1923,16 @@ func TestDatabaseConfigurationGet(t *testing.T) {
 	})
 
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetAdvancedMySQLConfiguration(testDBCluster.ID).Return(&testAdvancedMySQLConfiguration, nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "advanced_mysql")
+
+		err := RunDatabaseConfigurationGet(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		tm.databases.EXPECT().GetRedisConfiguration(testDBCluster.ID).Return(&testRedisConfiguration, nil)
 		config.Args = append(config.Args, testDBCluster.ID)
 		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "redis")
@@ -1884,6 +2020,16 @@ func TestDatabaseConfigurationUpdate(t *testing.T) {
 		tm.databases.EXPECT().UpdateAdvancedPostgresConfiguration(testDBCluster.ID, "").Return(nil)
 		config.Args = append(config.Args, testDBCluster.ID)
 		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "advanced_pg")
+
+		err := RunDatabaseConfigurationUpdate(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdateAdvancedMySQLConfiguration(testDBCluster.ID, "").Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "advanced_mysql")
 
 		err := RunDatabaseConfigurationUpdate(config)
 

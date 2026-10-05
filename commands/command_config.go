@@ -47,6 +47,7 @@ type CmdConfig struct {
 	Images            func() do.ImagesService
 	ImageActions      func() do.ImageActionsService
 	LoadBalancers     func() do.LoadBalancersService
+	MicroVMs          func() do.MicroVMsService
 	ReservedIPs       func() do.ReservedIPsService
 	ReservedIPActions func() do.ReservedIPActionsService
 	ReservedIPv6s     func() do.ReservedIPv6sService
@@ -61,6 +62,7 @@ type CmdConfig struct {
 	Account             func() do.AccountService
 	Balance             func() do.BalanceService
 	BillingHistory      func() do.BillingHistoryService
+	Prepayment          func() do.PrepaymentService
 	Invoices            func() do.InvoicesService
 	Tags                func() do.TagsService
 	UptimeChecks        func() do.UptimeChecksService
@@ -84,12 +86,15 @@ type CmdConfig struct {
 	OAuth               func() do.OAuthService
 	PartnerAttachments  func() do.PartnerAttachmentsService
 	SpacesKeys          func() do.SpacesKeysService
-	GradientAI          func() do.GradientAIService
+	AgentPlatform       func() do.AgentPlatformService
 	DedicatedInferences func() do.DedicatedInferenceService
 	Inference           func() do.InferenceService
 	Nfs                 func() do.NfsService
 	NfsActions          func() do.NfsActionsService
 	Security            func() do.SecurityService
+	HostedAgents        func() do.HostedAgentsService
+	HostedAgentTriggers func() do.HostedAgentTriggersService
+	Secrets             func() do.SecretsService
 }
 
 // NewCmdConfig creates an instance of a CmdConfig.
@@ -126,6 +131,7 @@ func NewCmdConfig(ns string, dc doctl.Config, out io.Writer, args []string, init
 			c.Account = func() do.AccountService { return do.NewAccountService(godoClient) }
 			c.Balance = func() do.BalanceService { return do.NewBalanceService(godoClient) }
 			c.BillingHistory = func() do.BillingHistoryService { return do.NewBillingHistoryService(godoClient) }
+			c.Prepayment = func() do.PrepaymentService { return do.NewPrepaymentService(godoClient) }
 			c.Invoices = func() do.InvoicesService { return do.NewInvoicesService(godoClient) }
 			c.Tags = func() do.TagsService { return do.NewTagsService(godoClient) }
 			c.UptimeChecks = func() do.UptimeChecksService { return do.NewUptimeChecksService(godoClient) }
@@ -154,7 +160,7 @@ func NewCmdConfig(ns string, dc doctl.Config, out io.Writer, args []string, init
 				return do.NewPartnerAttachmentsService(godoClient)
 			}
 			c.SpacesKeys = func() do.SpacesKeysService { return do.NewSpacesKeysService(godoClient) }
-			c.GradientAI = func() do.GradientAIService { return do.NewGradientAIService(godoClient) }
+			c.AgentPlatform = func() do.AgentPlatformService { return do.NewAgentPlatformService(godoClient) }
 			c.DedicatedInferences = func() do.DedicatedInferenceService {
 				return do.NewDedicatedInferenceService(godoClient)
 			}
@@ -163,7 +169,13 @@ func NewCmdConfig(ns string, dc doctl.Config, out io.Writer, args []string, init
 			}
 			c.Nfs = func() do.NfsService { return do.NewNfsService(godoClient) }
 			c.NfsActions = func() do.NfsActionsService { return do.NewNfsActionsService(godoClient) }
+			c.MicroVMs = func() do.MicroVMsService { return do.NewMicroVMsService(godoClient) }
 			c.Security = func() do.SecurityService { return do.NewSecurityService(godoClient) }
+			c.HostedAgents = func() do.HostedAgentsService { return do.NewHostedAgentsService(godoClient) }
+			c.HostedAgentTriggers = func() do.HostedAgentTriggersService {
+				return do.NewHostedAgentTriggersService(godoClient)
+			}
+			c.Secrets = func() do.SecretsService { return do.NewSecretsService(godoClient) }
 			return nil
 		},
 

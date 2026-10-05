@@ -249,6 +249,7 @@ type tcMocks struct {
 	apps                  *domocks.MockAppsService
 	balance               *domocks.MockBalanceService
 	billingHistory        *domocks.MockBillingHistoryService
+	prepayment            *domocks.MockPrepaymentService
 	databases             *domocks.MockDatabasesService
 	dropletActions        *domocks.MockDropletActionsService
 	dropletAutoscale      *domocks.MockDropletAutoscaleService
@@ -291,12 +292,16 @@ type tcMocks struct {
 	oauth                 *domocks.MockOAuthService
 	partnerAttachments    *domocks.MockPartnerAttachmentsService
 	spacesKeys            *domocks.MockSpacesKeysService
-	gradientAI            *domocks.MockGradientAIService
+	agentPlatform         *domocks.MockAgentPlatformService
 	dedicatedInferences   *domocks.MockDedicatedInferenceService
 	inference             *domocks.MockInferenceService
 	nfs                   *domocks.MockNfsService
 	nfsActions            *domocks.MockNfsActionsService
+	microVMs              *domocks.MockMicroVMsService
 	security              *domocks.MockSecurityService
+	hostedAgents          *domocks.MockHostedAgentsService
+	hostedAgentTriggers   *domocks.MockHostedAgentTriggersService
+	secrets               *domocks.MockSecretsService
 	vectorDBs             *domocks.MockVectorDBsService
 }
 
@@ -304,12 +309,27 @@ func withTestClient(t *testing.T, tFn testFn) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
+	// Public Preview Terms runs on create/launch and would otherwise call
+	// Account.Get / ListSessions on every test that never stubs them.
+	prevUUID := agentPublicPreviewAccountUUID
+	prevSessions := agentPublicPreviewHasExistingSessions
+	prevSeen := viper.GetStringSlice(agentPublicPreviewTermsSeenKey)
+	agentPublicPreviewAccountUUID = func(*CmdConfig) string { return "unit-test-account" }
+	agentPublicPreviewHasExistingSessions = func(*CmdConfig) (bool, bool) { return true, true }
+	viper.Set(agentPublicPreviewTermsSeenKey, []string{"user:unit-test-account"})
+	t.Cleanup(func() {
+		agentPublicPreviewAccountUUID = prevUUID
+		agentPublicPreviewHasExistingSessions = prevSessions
+		viper.Set(agentPublicPreviewTermsSeenKey, prevSeen)
+	})
+
 	tm := &tcMocks{
 		account:               domocks.NewMockAccountService(ctrl),
 		actions:               domocks.NewMockActionsService(ctrl),
 		apps:                  domocks.NewMockAppsService(ctrl),
 		balance:               domocks.NewMockBalanceService(ctrl),
 		billingHistory:        domocks.NewMockBillingHistoryService(ctrl),
+		prepayment:            domocks.NewMockPrepaymentService(ctrl),
 		keys:                  domocks.NewMockKeysService(ctrl),
 		sizes:                 domocks.NewMockSizesService(ctrl),
 		regions:               domocks.NewMockRegionsService(ctrl),
@@ -352,12 +372,16 @@ func withTestClient(t *testing.T, tFn testFn) {
 		oauth:                 domocks.NewMockOAuthService(ctrl),
 		partnerAttachments:    domocks.NewMockPartnerAttachmentsService(ctrl),
 		spacesKeys:            domocks.NewMockSpacesKeysService(ctrl),
-		gradientAI:            domocks.NewMockGradientAIService(ctrl),
+		agentPlatform:         domocks.NewMockAgentPlatformService(ctrl),
 		dedicatedInferences:   domocks.NewMockDedicatedInferenceService(ctrl),
 		inference:             domocks.NewMockInferenceService(ctrl),
 		nfs:                   domocks.NewMockNfsService(ctrl),
 		nfsActions:            domocks.NewMockNfsActionsService(ctrl),
+		microVMs:              domocks.NewMockMicroVMsService(ctrl),
 		security:              domocks.NewMockSecurityService(ctrl),
+		hostedAgents:          domocks.NewMockHostedAgentsService(ctrl),
+		hostedAgentTriggers:   domocks.NewMockHostedAgentTriggersService(ctrl),
+		secrets:               domocks.NewMockSecretsService(ctrl),
 		vectorDBs:             domocks.NewMockVectorDBsService(ctrl),
 	}
 
@@ -397,6 +421,7 @@ func withTestClient(t *testing.T, tFn testFn) {
 		Account:             func() do.AccountService { return tm.account },
 		Balance:             func() do.BalanceService { return tm.balance },
 		BillingHistory:      func() do.BillingHistoryService { return tm.billingHistory },
+		Prepayment:          func() do.PrepaymentService { return tm.prepayment },
 		Invoices:            func() do.InvoicesService { return tm.invoices },
 		Tags:                func() do.TagsService { return tm.tags },
 		UptimeChecks:        func() do.UptimeChecksService { return tm.uptimeChecks },
@@ -421,12 +446,16 @@ func withTestClient(t *testing.T, tFn testFn) {
 		OAuth:               func() do.OAuthService { return tm.oauth },
 		PartnerAttachments:  func() do.PartnerAttachmentsService { return tm.partnerAttachments },
 		SpacesKeys:          func() do.SpacesKeysService { return tm.spacesKeys },
-		GradientAI:          func() do.GradientAIService { return tm.gradientAI },
+		AgentPlatform:       func() do.AgentPlatformService { return tm.agentPlatform },
 		DedicatedInferences: func() do.DedicatedInferenceService { return tm.dedicatedInferences },
 		Inference:           func() do.InferenceService { return tm.inference },
 		Nfs:                 func() do.NfsService { return tm.nfs },
 		NfsActions:          func() do.NfsActionsService { return tm.nfsActions },
+		MicroVMs:            func() do.MicroVMsService { return tm.microVMs },
 		Security:            func() do.SecurityService { return tm.security },
+		HostedAgents:        func() do.HostedAgentsService { return tm.hostedAgents },
+		HostedAgentTriggers: func() do.HostedAgentTriggersService { return tm.hostedAgentTriggers },
+		Secrets:             func() do.SecretsService { return tm.secrets },
 		VectorDBs:           func() do.VectorDBsService { return tm.vectorDBs },
 	}
 

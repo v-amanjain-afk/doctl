@@ -16,6 +16,7 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -102,6 +103,7 @@ You can customize the configuration using the listed flags, all of which are opt
 To retrieve a list of your database clusters and their IDs, use `+"`"+`doctl databases list`+"`"+`.`, Writer,
 		aliasOpt("rm"))
 	AddBoolFlag(cmdDatabaseDelete, doctl.ArgForce, doctl.ArgShortForce, false, "Delete the database cluster without a confirmation prompt")
+	AddBoolFlag(cmdDatabaseDelete, doctl.ArgCommandWait, "", false, "A boolean value that specifies whether to wait for the database cluster to be deleted before returning control to the terminal.")
 	cmdDatabaseDelete.Example = `The following example deletes the database cluster with the ID ` + "`" + `f81d4fae-7dec-11d0-a765-00a0c91e6bf6` + "`" + `: doctl databases delete f81d4fae-7dec-11d0-a765-00a0c91e6bf6`
 
 	cmdDatabaseGetConn := CmdBuilder(cmd, RunDatabaseConnectionGet, "connection <database-cluster-id>", "Retrieve connection details for a database cluster", `Retrieves the following connection details for a database cluster:
@@ -452,7 +454,25 @@ func RunDatabaseDelete(c *CmdConfig) error {
 
 	if force || AskForConfirmDelete("database cluster", 1) == nil {
 		id := c.Args[0]
-		return c.Databases().Delete(id)
+		dbs := c.Databases()
+		if err := dbs.Delete(id); err != nil {
+			return err
+		}
+
+		wait, err := c.Doit.GetBool(c.NS, doctl.ArgCommandWait)
+		if err != nil {
+			return err
+		}
+
+		if wait {
+			notice("Database deletion is in progress, waiting for database to be deleted")
+			if err := waitForDatabaseDeleted(dbs, id); err != nil {
+				return fmt.Errorf("database couldn't be deleted: %v", err)
+			}
+			notice("Database is successfully deleted")
+		}
+
+		return nil
 	}
 
 	return errOperationAborted
@@ -538,12 +558,12 @@ func RunDatabaseResize(c *CmdConfig) error {
 	}
 
 	if wait {
-		notice("Database resizing is in progress, waiting for database to be online")
+		notice("Database resizing is in progress, waiting for resize to complete")
 
-		err := waitForDatabaseReady(dbs, id)
+		err := waitForDatabaseResize(dbs, id, r)
 		if err != nil {
 			return fmt.Errorf(
-				"database couldn't enter the `online` state after resizing: %v",
+				"database resize did not complete: %v",
 				err,
 			)
 		}
@@ -2630,6 +2650,99 @@ func waitForDatabaseReady(dbs do.DatabasesService, dbID string) error {
 	)
 }
 
+func waitForDatabaseDeleted(dbs do.DatabasesService, dbID string) error {
+	const maxAttempts = 180
+	attempts := 0
+	printNewLineSet := false
+
+	for i := 0; i < maxAttempts; i++ {
+		if attempts != 0 {
+			fmt.Fprint(os.Stderr, ".")
+			if !printNewLineSet {
+				printNewLineSet = true
+				defer fmt.Fprintln(os.Stderr)
+			}
+		}
+
+		_, err := dbs.Get(dbID)
+		if err != nil {
+			if errResp, ok := err.(*godo.ErrorResponse); ok && errResp.Response.StatusCode == http.StatusNotFound {
+				return nil
+			}
+			return err
+		}
+
+		attempts++
+		time.Sleep(10 * time.Second)
+	}
+
+	return fmt.Errorf(
+		"timeout waiting for database (%s) to be deleted",
+		dbID,
+	)
+}
+
+// engineSupportsStorageSize reports whether the database engine supports
+// --storage-size-mib on resize. Redis and Valkey do not.
+func engineSupportsStorageSize(engine string) bool {
+	switch strings.ToLower(engine) {
+	case "redis", "valkey":
+		return false
+	default:
+		return true
+	}
+}
+
+// isDatabaseResizeComplete reports whether the cluster reflects the requested
+// resize and is online. Storage is only checked when it was included in the
+// resize request (non-zero) and the engine supports storage sizing.
+func isDatabaseResizeComplete(db *do.Database, req *godo.DatabaseResizeRequest) bool {
+	if db.Status != "online" {
+		return false
+	}
+	if db.SizeSlug != req.SizeSlug || db.NumNodes != req.NumNodes {
+		return false
+	}
+	if req.StorageSizeMib > 0 && engineSupportsStorageSize(db.EngineSlug) &&
+		db.StorageSizeMib != req.StorageSizeMib {
+		return false
+	}
+	return true
+}
+
+func waitForDatabaseResize(dbs do.DatabasesService, dbID string, req *godo.DatabaseResizeRequest) error {
+	const maxAttempts = 180
+	attempts := 0
+	printNewLineSet := false
+
+	for i := 0; i < maxAttempts; i++ {
+		if attempts != 0 {
+			fmt.Fprint(os.Stderr, ".")
+			if !printNewLineSet {
+				printNewLineSet = true
+				defer fmt.Fprintln(os.Stderr)
+			}
+		}
+
+		db, err := dbs.Get(dbID)
+		if err != nil {
+			return err
+		}
+
+		if isDatabaseResizeComplete(db, req) {
+			return nil
+		}
+
+		attempts++
+		time.Sleep(10 * time.Second)
+	}
+
+	return fmt.Errorf(
+		"timeout waiting for database (%s) resize to complete",
+		dbID,
+	)
+}
+
 func databaseConfiguration() *Command {
 	cmd := &Command{
 		Command: &cobra.Command{
@@ -2659,6 +2772,7 @@ For a full list of available fields, see the API documentation: https://docs.dig
 		displayerType(&displayers.MySQLConfiguration{}),
 		displayerType(&displayers.PostgreSQLConfiguration{}),
 		displayerType(&displayers.AdvancedPostgresConfiguration{}),
+		displayerType(&displayers.AdvancedMySQLConfiguration{}),
 		displayerType(&displayers.RedisConfiguration{}),
 		displayerType(&displayers.ValkeyConfiguration{}),
 		displayerType(&displayers.MongoDBConfiguration{}),
@@ -2719,17 +2833,18 @@ func RunDatabaseConfigurationGet(c *CmdConfig) error {
 	}
 
 	allowedEngines := map[string]any{
-		"mysql":       nil,
-		"pg":          nil,
-		"advanced_pg": nil,
-		"redis":       nil,
-		"valkey":      nil,
-		"mongodb":     nil,
-		"kafka":       nil,
-		"opensearch":  nil,
+		"mysql":          nil,
+		"pg":             nil,
+		"advanced_pg":    nil,
+		"advanced_mysql": nil,
+		"redis":          nil,
+		"valkey":         nil,
+		"mongodb":        nil,
+		"kafka":          nil,
+		"opensearch":     nil,
 	}
 	if _, ok := allowedEngines[engine]; !ok {
-		return fmt.Errorf("(%s) command: engine must be one of: 'pg', 'advanced_pg', 'mysql', 'redis', 'valkey', 'mongodb', 'kafka', opensearch", c.NS)
+		return fmt.Errorf("(%s) command: engine must be one of: 'pg', 'advanced_pg', 'mysql', 'advanced_mysql', 'redis', 'valkey', 'mongodb', 'kafka', opensearch", c.NS)
 	}
 
 	dbId := args[0]
@@ -2761,6 +2876,16 @@ func RunDatabaseConfigurationGet(c *CmdConfig) error {
 
 		displayer := displayers.AdvancedPostgresConfiguration{
 			AdvancedPostgresConfig: *config,
+		}
+		return c.Display(&displayer)
+	} else if engine == "advanced_mysql" {
+		config, err := c.Databases().GetAdvancedMySQLConfiguration(dbId)
+		if err != nil {
+			return err
+		}
+
+		displayer := displayers.AdvancedMySQLConfiguration{
+			AdvancedMySQLConfig: *config,
 		}
 		return c.Display(&displayer)
 	} else if engine == "redis" {
@@ -2833,17 +2958,18 @@ func RunDatabaseConfigurationUpdate(c *CmdConfig) error {
 	}
 
 	allowedEngines := map[string]any{
-		"mysql":       nil,
-		"pg":          nil,
-		"advanced_pg": nil,
-		"redis":       nil,
-		"valkey":      nil,
-		"mongodb":     nil,
-		"kafka":       nil,
-		"opensearch":  nil,
+		"mysql":          nil,
+		"pg":             nil,
+		"advanced_pg":    nil,
+		"advanced_mysql": nil,
+		"redis":          nil,
+		"valkey":         nil,
+		"mongodb":        nil,
+		"kafka":          nil,
+		"opensearch":     nil,
 	}
 	if _, ok := allowedEngines[engine]; !ok {
-		return fmt.Errorf("(%s) command: engine must be one of: 'pg', 'advanced_pg', 'mysql', 'redis', 'valkey', 'mongodb', 'kafka', 'opensearch'", c.NS)
+		return fmt.Errorf("(%s) command: engine must be one of: 'pg', 'advanced_pg', 'mysql', 'advanced_mysql', 'redis', 'valkey', 'mongodb', 'kafka', 'opensearch'", c.NS)
 	}
 
 	configJson, err := c.Doit.GetString(c.NS, doctl.ArgDatabaseConfigJson)
@@ -2864,6 +2990,11 @@ func RunDatabaseConfigurationUpdate(c *CmdConfig) error {
 		}
 	} else if engine == "advanced_pg" {
 		err := c.Databases().UpdateAdvancedPostgresConfiguration(dbId, configJson)
+		if err != nil {
+			return err
+		}
+	} else if engine == "advanced_mysql" {
+		err := c.Databases().UpdateAdvancedMySQLConfiguration(dbId, configJson)
 		if err != nil {
 			return err
 		}
