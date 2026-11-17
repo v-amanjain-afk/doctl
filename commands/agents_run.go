@@ -93,7 +93,21 @@ const (
 
 	claudeCodeAgentName = "claude-code"
 	codexAgentName      = "codex"
-	anthropicAPIKeyEnv  = "ANTHROPIC_API_KEY"
+	// openHandsAgentName is the OpenHands Agent Server, run by OHR in the
+	// `openhands` template (the agent is an always-on server there, not a CLI
+	// spawned per run). Same agent Agent Canvas creates sessions with.
+	openHandsAgentName = "openhands"
+	// hermesAgentName is the Hermes gateway, run by OHR in the `coding-hermes`
+	// template. Like OpenHands the agent is an always-on server rather than a
+	// CLI spawned per run, and the gateway is reached over `port-forward` as
+	// well as over OHR.
+	hermesAgentName = "hermes"
+	// minimaxCodeAgentName is MiniMax Code (`mcode`), a CLI spawned per run by
+	// OHR's ACP adapter in the coding-minimax-code template. Same shape as
+	// claude-code: the user's own vendor key, no server-minted credential.
+	minimaxCodeAgentName = "minimax-code"
+	anthropicAPIKeyEnv   = "ANTHROPIC_API_KEY"
+	minimaxAPIKeyEnv     = "MINIMAX_API_KEY"
 )
 
 var (
@@ -113,9 +127,9 @@ var (
 // --harness codex users the OpenAI-managed adapter, which also differs in what
 // it supports (for example it is excluded from checkpoint/fork/rollback).
 //
-// none is not a harness at all — it is the absence of one. It is accepted here
-// so a bare sandbox is reachable without hand-writing a manifest, which is the
-// whole point of --harness.
+// none (and its equal spelling sandbox) is not a harness at all — it is the
+// absence of one. It is listed here only so isBareSandboxHarness can refuse it
+// with a pointer to `--template sandbox`.
 var harnessAgentNames = map[string]string{
 	"opencode":       "opencode",
 	"open-code":      "opencode",
@@ -124,7 +138,13 @@ var harnessAgentNames = map[string]string{
 	"codex":          codexAgentName,
 	"codex-agentapi": openAIAgentsAdapter,
 	"openai-codex":   openAIAgentsAdapter,
+	"openhands":      openHandsAgentName,
+	"open-hands":     openHandsAgentName,
+	"hermes":         hermesAgentName,
+	"minimax-code":   minimaxCodeAgentName,
+	"minimax":        minimaxCodeAgentName,
 	"none":           bareSandboxAgent,
+	"sandbox":        bareSandboxAgent,
 }
 
 // bareSandboxAgent is the flat-manifest agent value for a sandbox with no agent
@@ -133,6 +153,21 @@ var harnessAgentNames = map[string]string{
 // server-side, so every doctl path that would talk to an agent has to be closed
 // off ahead of the call rather than left to fail at it.
 const bareSandboxAgent = "none"
+
+// bareSandboxAgentAlt is the API's equal spelling of bareSandboxAgent. doctl
+// never generates it, but a manifest that says it is a bare sandbox too.
+const bareSandboxAgentAlt = "sandbox"
+
+// hostedAgentKindSandbox is the agent kind the API writes for a new bare
+// sandbox, replacing godo.HostedAgentKindNone. godo does not declare it yet.
+const hostedAgentKindSandbox godo.HostedAgentKind = "AGENT_KIND_SANDBOX"
+
+// isBareSandboxKind reports whether a session's agent kind means no agent runs
+// in it. Sessions created before AGENT_KIND_SANDBOX existed keep
+// AGENT_KIND_NONE, so both count.
+func isBareSandboxKind(k godo.HostedAgentKind) bool {
+	return k == godo.HostedAgentKindNone || k == hostedAgentKindSandbox
+}
 
 // isBareSandboxHarness reports whether a raw --harness value asks for a sandbox
 // with no agent. Takes the raw flag value (not the resolved agent) so callers
@@ -165,11 +200,14 @@ func isAgentlessTemplate(template string) bool {
 // harnessAgentNames) to their proper display name, matching the casing used
 // by prettyAgentKind (e.g. "opencode" -> "OpenCode").
 var harnessDisplayNames = map[string]string{
-	"opencode":          "OpenCode",
-	claudeCodeAgentName: "Claude Code",
-	codexAgentName:      "Codex CLI",
-	openAIAgentsAdapter: "Codex",
-	bareSandboxAgent:    "Bare sandbox",
+	"opencode":           "OpenCode",
+	claudeCodeAgentName:  "Claude Code",
+	codexAgentName:       "Codex CLI",
+	openAIAgentsAdapter:  "Codex",
+	openHandsAgentName:   "OpenHands",
+	hermesAgentName:      "Hermes",
+	minimaxCodeAgentName: "MiniMax Code",
+	bareSandboxAgent:     "Sandbox",
 }
 
 // prettyHarnessName returns the display name for a raw --harness value or
@@ -287,6 +325,7 @@ func launchExistingSession(c *CmdConfig, ref string) error {
 	if err != nil {
 		return launchUnresolvableRefErr(ref, err)
 	}
+	warnBoundReuseSession(c, sessionID)
 
 	sess, err := svc.GetSession(sessionID)
 	if err != nil {
@@ -418,7 +457,13 @@ func rejectCreationFlagsForExistingSession(c *CmdConfig) error {
 		doctl.ArgAgentWaitTimeout,
 		doctl.ArgAgentTemplate,
 		doctl.ArgAgentPermission,
+		doctl.ArgAgentWorkspace,
+		doctl.ArgInferenceModel,
 	} {
+		if flag == doctl.ArgAgentWorkspace && c.Doit.IsSet(flag) {
+			return fmt.Errorf("--%s only applies when creating a new session from a saved config: `%s create --%s <config> --%s <workspace-id>`",
+				flag, agentCLI, doctl.ArgAgentFromConfig, doctl.ArgAgentWorkspace)
+		}
 		if c.Doit.IsSet(flag) {
 			return fmt.Errorf("--%s only applies when creating a new session; did you mean `%s create --%s`?", flag, agentCLI, flag)
 		}
@@ -447,7 +492,7 @@ func resolveHarnessAgent(harness string) (string, error) {
 		// --template implication sets it internally, while a user who types it
 		// is refused by resolveAgentCreationSource. Listing it would send them
 		// to a value that answers with a second error.
-		return "", fmt.Errorf("unsupported --%s %q; supported values: opencode, claude-code, codex, codex-agentapi",
+		return "", fmt.Errorf("unsupported --%s %q; supported values: opencode, claude-code, codex, codex-agentapi, openhands, hermes, minimax-code",
 			doctl.ArgAgentHarness, harness)
 	}
 	return agent, nil
@@ -455,13 +500,18 @@ func resolveHarnessAgent(harness string) (string, error) {
 
 type harnessManifest struct {
 	Name        string              `yaml:"name,omitempty"`
-	Agent       string              `yaml:"agent"`
+	Harness     string              `yaml:"harness"`
 	Template    string              `yaml:"template,omitempty"`
 	Repos       []string            `yaml:"repos,omitempty"`
 	Config      map[string]any      `yaml:"config,omitempty"`
 	Env         map[string]string   `yaml:"env,omitempty"`
 	Secrets     map[string]string   `yaml:"secrets,omitempty"`
 	Permissions *harnessPermissions `yaml:"permissions,omitempty"`
+	// KeepWarm is only ever written as false, and only for openhands: that
+	// adapter's server-side default is keep_warm, which bills until the
+	// session is destroyed and makes harness-api refuse every pause. Agent
+	// Canvas writes the same field for the same reason.
+	KeepWarm *bool `yaml:"keep_warm,omitempty"`
 }
 
 // harnessPermissions is the subset of the manifest permissions block --harness
@@ -481,6 +531,74 @@ type harnessManifestOpts struct {
 	name       string
 	permission string
 	template   string
+	// model is the DigitalOcean Inference model id written as the manifest's
+	// env HARNESS_INFERENCE_MODEL. Empty leaves the key out, except for
+	// openhands and hermes, which get defaultOpenHandsModel and
+	// defaultHermesModel.
+	model string
+}
+
+// defaultOpenHandsModel is the DigitalOcean Inference model an openhands
+// session runs on when --model is not given. It has to be a DO catalogue id:
+// the adapter's own fallback is the agent-server's `gpt-5.5`, which the DO
+// gateway does not serve, so a session created without a model answered its
+// first turn with "model not found" (seen on the first preview smoke). The
+// other harnesses read the user's own vendor key and need no default here.
+const defaultOpenHandsModel = "openai-gpt-5.5"
+
+// defaultHermesModel is the DigitalOcean Inference model a hermes session runs
+// on when --model is not given. Hermes has no fallback model of its own: the
+// gateway's render-config.sh renders an empty model into config.yaml and warns
+// that the first turn will fail, so the flag has to name one. Kept separate
+// from defaultOpenHandsModel rather than shared, because the two are
+// independent product choices and either may move without the other.
+const defaultHermesModel = "openai-gpt-5.5"
+
+// harnessInferenceModelEnv is the guest env var the harness inference driver
+// reads the model id from; one of the two HARNESS_INFERENCE_* keys harness-api
+// still lets a manifest set.
+const harnessInferenceModelEnv = "HARNESS_INFERENCE_MODEL"
+
+// harnessInferenceAPIKeyEnv is the guest secret the DO Inference path delivers
+// as. manage_model_access_key asks harness-api to mint it when the manifest
+// names a harness model but supplies no inference or vendor API key.
+const harnessInferenceAPIKeyEnv = "HARNESS_INFERENCE_API_KEY"
+
+// needsManagedModelAccessKey reports whether create should ask harness-api to
+// mint a DigitalOcean Inference key (manage_model_access_key). True only when
+// the resolved manifest sets HARNESS_INFERENCE_MODEL and supplies no non-empty
+// HARNESS_INFERENCE_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY (env or
+// secrets). Empty slots and ${VAR} placeholders do not count as provided.
+func needsManagedModelAccessKey(manifest []byte) bool {
+	var doc map[string]any
+	if err := yaml.Unmarshal(manifest, &doc); err != nil || doc == nil {
+		return false
+	}
+	_, legacy := doc["apiVersion"]
+	env, _, _, _ := extractManifestEnvAndSecrets(doc, legacy)
+	if strings.TrimSpace(env[harnessInferenceModelEnv]) == "" {
+		return false
+	}
+	if hasProvidedCredential(manifest, env, harnessInferenceAPIKeyEnv) {
+		return false
+	}
+	if hasProvidedCredential(manifest, env, openAIAPIKeyEnv) {
+		return false
+	}
+	if hasProvidedCredential(manifest, env, anthropicAPIKeyEnv) {
+		return false
+	}
+	return true
+}
+
+func hasProvidedCredential(manifest []byte, env map[string]string, name string) bool {
+	if v := strings.TrimSpace(env[name]); v != "" && v != redactedSecretValue && !isEnvPlaceholder(v) {
+		return true
+	}
+	if v := strings.TrimSpace(resolvedManifestSecretValues(manifest)[name]); v != "" {
+		return true
+	}
+	return false
 }
 
 func buildHarnessManifest(o harnessManifestOpts) ([]byte, error) {
@@ -489,7 +607,7 @@ func buildHarnessManifest(o harnessManifestOpts) ([]byte, error) {
 		return nil, err
 	}
 
-	doc := harnessManifest{Agent: agent}
+	doc := harnessManifest{Harness: agent}
 	if ref, err := normalizeHarnessRepoRef(o.repo); err != nil {
 		return nil, err
 	} else if ref != "" {
@@ -541,15 +659,61 @@ func buildHarnessManifest(o harnessManifestOpts) ([]byte, error) {
 	case agent == claudeCodeAgentName:
 		// Claude Code needs its own inference key just like Codex needs
 		// OPENAI_API_KEY. Referencing it here (rather than baking in a
-		// literal) still routes through expandManifestEnvCollect/ensureEnvVar
-		// so a missing key is prompted for on a TTY, but a present-but-bogus
-		// key is caught too: prepareClaudeCodeStart validates it against
-		// Anthropic's API before doctl ever calls CreateSessionFromManifest,
-		// instead of failing deep into a hosted session that was never going
-		// to work.
+		// literal) routes through expandManifestEnvCollect/ensureEnvVar so a
+		// missing key is prompted for on a TTY.
 		doc.Secrets = map[string]string{
 			"ANTHROPIC_API_KEY": "${" + anthropicAPIKeyEnv + "}",
 		}
+	case agent == minimaxCodeAgentName:
+		// Same as claude-code with MiniMax's key: mcode dials MiniMax's own
+		// endpoint under a native MINIMAX_API_KEY and has a default model of
+		// its own, so nothing else goes in the manifest. Like claude-code,
+		// the slot is always written, so --harness is the vendor-key path
+		// only: a session on DigitalOcean Inference (HARNESS_INFERENCE_API_KEY
+		// and HARNESS_INFERENCE_MODEL, no MiniMax key) needs a hand-written
+		// manifest. No template pin: harness-api resolves the kind to
+		// coding-minimax-code itself.
+		doc.Secrets = map[string]string{
+			minimaxAPIKeyEnv: "${" + minimaxAPIKeyEnv + "}",
+		}
+	case agent == openHandsAgentName:
+		// No key slot: OpenHands runs on DigitalOcean Inference. Setting
+		// HARNESS_INFERENCE_MODEL below (with no vendor/harness API key)
+		// makes needsManagedModelAccessKey ask harness-api to mint
+		// HARNESS_INFERENCE_API_KEY. A user who wants their own key passes
+		// --secret HARNESS_INFERENCE_API_KEY=..., which skips that opt-in.
+		// Pin the template the agent lives in unless the user named one, and
+		// opt out of keep_warm (see harnessManifest.KeepWarm).
+		if doc.Template == "" {
+			doc.Template = openHandsAgentName
+		}
+		keepWarm := false
+		doc.KeepWarm = &keepWarm
+		if strings.TrimSpace(o.model) == "" {
+			o.model = defaultOpenHandsModel
+		}
+	case agent == hermesAgentName:
+		// Same shape as openhands: no key slot; HARNESS_INFERENCE_MODEL below
+		// triggers manage_model_access_key unless the user brings
+		// HARNESS_INFERENCE_API_KEY or OPENAI_API_KEY (--secret). Hermes
+		// prefers OPENAI_* when present (render-config.sh). The model is
+		// written because hermes has none of its own (see defaultHermesModel).
+		//
+		// No template pin and no keep_warm, unlike openhands. templateForAgentKind
+		// already resolves the kind to coding-hermes, and no flipper gates the
+		// template per team; keep_warm defaults to true server-side for hermes
+		// on purpose, because the gateway is driven over a port-forward tunnel
+		// that idle-pause's activity tracking cannot see.
+		if strings.TrimSpace(o.model) == "" {
+			o.model = defaultHermesModel
+		}
+	}
+
+	if model := strings.TrimSpace(o.model); model != "" {
+		if doc.Env == nil {
+			doc.Env = map[string]string{}
+		}
+		doc.Env[harnessInferenceModelEnv] = model
 	}
 
 	out, err := yaml.Marshal(doc)
@@ -671,10 +835,6 @@ func startSessionFromRawManifest(c *CmdConfig, raw []byte, resumeOnTopoff bool, 
 
 	raw = dropEnvKeysCoveredBySecrets(raw)
 
-	if err := prepareClaudeCodeStart(context.Background(), raw, prog); err != nil {
-		return nil, err
-	}
-
 	lookup := envLookupWithOverlay(withServerProvidedOverlay(resolvedManifestSecretValues(raw), envOverlay))
 	manifest, err := expandManifestEnvCollect(raw, lookup)
 	if err != nil {
@@ -695,7 +855,15 @@ func startSessionFromRawManifest(c *CmdConfig, raw []byte, resumeOnTopoff bool, 
 	if prog != nil {
 		prog.wait("Creating hosted session…")
 	}
-	sess, err := c.HostedAgents().CreateSessionFromManifest(manifest, createOpt)
+	var sess *do.HostedAgentSession
+	if needsManagedModelAccessKey(manifest) {
+		// Manifest asks for harness-routed inference (HARNESS_INFERENCE_MODEL)
+		// without bringing HARNESS_INFERENCE_API_KEY / OPENAI_API_KEY /
+		// ANTHROPIC_API_KEY, so harness-api mints the DO Inference key.
+		sess, err = c.HostedAgents().CreateSessionFromManifestWithManagedKey(manifest, createOpt)
+	} else {
+		sess, err = c.HostedAgents().CreateSessionFromManifest(manifest, createOpt)
+	}
 	if err != nil {
 		if sessionLimitErr(err) {
 			msg, _, _ := agentAPIError(err)
@@ -710,43 +878,6 @@ func startSessionFromRawManifest(c *CmdConfig, raw []byte, resumeOnTopoff bool, 
 		printSessionCreateWarnings(sess.Warnings)
 	}
 	return sess, nil
-}
-
-// prepareClaudeCodeStart mirrors prepareOpenAISandboxStart for claude-code:
-// it resolves ANTHROPIC_API_KEY (prompting on a TTY if missing, exactly like
-// ensureEnvVar already did) and then confirms Anthropic actually accepts it
-// with a real, free API call — closing the gap where a bogus (but non-empty)
-// key used to sail through to CreateSessionFromManifest and only fail deep
-// inside the hosted sandbox. No-ops for every other harness.
-func prepareClaudeCodeStart(ctx context.Context, raw []byte, prog *creationProgress) error {
-	doc, err := parseAgentManifest(raw)
-	if err != nil {
-		return err
-	}
-	if doc.adapter() != claudeCodeAgentName {
-		return nil
-	}
-
-	apiKey := strings.TrimSpace(resolvedManifestSecretValues(raw)[anthropicAPIKeyEnv])
-	if apiKey == "" {
-		var err error
-		apiKey, err = ensureEnvVar(anthropicAPIKeyEnv)
-		if err != nil {
-			return fmt.Errorf("%s is required to start a %s session (set the environment variable, or pass --%s %s=- / NAME=@path): %w",
-				anthropicAPIKeyEnv, claudeCodeAgentName, doctl.ArgAgentSecret, anthropicAPIKeyEnv, err)
-		}
-	}
-
-	if prog != nil {
-		prog.wait(anthropicKeyCheckLabel)
-	}
-	if err := validateAnthropicAPIKey(ctx, apiKey); err != nil {
-		return err
-	}
-	if prog != nil {
-		prog.ok("Anthropic API key OK")
-	}
-	return nil
 }
 
 func manifestNeedsOpenAIPrepare(raw []byte) (bool, error) {
@@ -930,7 +1061,7 @@ func (s *lineSpinner) stopAndClear() {
 }
 
 // startupWords are the lines a create/wait spinner prints for whatever is
-// starting. A session with `agent: none` has no agent in it, so the agent
+// starting. A session with `harness: none` has no agent in it, so the agent
 // wording there names a process that never runs — "Starting agent runtime…" in
 // particular describes a step coding-base does not have, which reads as a stall
 // rather than as a stage that does not apply.
@@ -968,7 +1099,7 @@ var bareSandboxStartupWords = startupWords{
 // did not create — `port-forward` into someone else's bare sandbox included.
 func startupWordsFor(sess *do.HostedAgentSession) startupWords {
 	if sess != nil && sess.HostedAgentSession != nil &&
-		sess.AgentKind == godo.HostedAgentKindNone {
+		isBareSandboxKind(sess.AgentKind) {
 		return bareSandboxStartupWords
 	}
 	return agentStartupWords
@@ -1068,6 +1199,110 @@ func waitForSessionReady(ctx context.Context, svc do.HostedAgentsService, sessio
 	}
 }
 
+// waitForSessionConfigUpdate polls the session until a live config update has
+// finished: the status has left SESSION_STATUS_UPDATING and the update is no
+// longer APPLYING. It returns the settled session, or an error when the update
+// FAILED (naming the server's detail and whether it reverted), the session
+// ended, or ctx expired.
+func waitForSessionConfigUpdate(ctx context.Context, svc do.HostedAgentsService, sessionID string, prog *creationProgress) (*do.HostedAgentSession, error) {
+	ticker := time.NewTicker(sessionReadyPollInterval)
+	defer ticker.Stop()
+
+	announced := false
+	var last godo.HostedAgentSessionStatus
+	for {
+		sess, err := svc.GetSession(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		last = sess.Status
+
+		applying := sess.Status == godo.HostedAgentSessionStatusUpdating ||
+			(sess.Update != nil && sess.Update.State == godo.HostedAgentSessionConfigUpdateStateApplying)
+		if applying {
+			if prog != nil && !announced {
+				prog.wait("Applying config update…")
+				announced = true
+			}
+		} else {
+			switch sess.Status {
+			case godo.HostedAgentSessionStatusFailed,
+				godo.HostedAgentSessionStatusDestroyed,
+				godo.HostedAgentSessionStatusDestroying:
+				return nil, fmt.Errorf("session entered %s during the config update", humanSessionStatus(sess.Status))
+			}
+			if u := sess.Update; u != nil && u.State == godo.HostedAgentSessionConfigUpdateStateFailed {
+				return nil, configUpdateFailedError(u)
+			}
+			return sess, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, fmt.Errorf("timed out waiting for the config update of session %s (last status: %s); it may still finish, check `%s show %s`",
+					sessionID, humanSessionStatus(last), agentCLI, sessionID)
+			}
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// configUpdateFailedError describes a FAILED config update, carrying the
+// server's detail and whether the previous config was restored.
+func configUpdateFailedError(u *godo.HostedAgentSessionConfigUpdate) error {
+	msg := "config update failed"
+	if u.Error != "" {
+		msg += " (" + string(u.Error) + ")"
+	}
+	if d := strings.TrimSpace(u.Detail); d != "" {
+		msg += ": " + d
+	}
+	if u.Reverted {
+		msg += ". The session was reverted to its previous config"
+	}
+	return errors.New(msg)
+}
+
+// configChangesSummary renders an update's changes compactly, e.g.
+// "tools +jira −docs; env ~MODE". Empty when nothing is recorded.
+func configChangesSummary(u *godo.HostedAgentSessionConfigUpdate) string {
+	if u == nil {
+		return ""
+	}
+	return configDiffSummary(u.Changes)
+}
+
+func configDiffSummary(ch *godo.HostedAgentSessionConfigChanges) string {
+	if ch == nil {
+		return ""
+	}
+	var parts []string
+	for _, sec := range []struct {
+		name string
+		c    *godo.HostedAgentSessionConfigSectionChanges
+	}{{"tools", ch.Tools}, {"env", ch.Env}, {"secrets", ch.Secrets}} {
+		if sec.c == nil {
+			continue
+		}
+		var items []string
+		for _, k := range sec.c.Added {
+			items = append(items, "+"+k)
+		}
+		for _, k := range sec.c.Removed {
+			items = append(items, "−"+k)
+		}
+		for _, k := range sec.c.Changed {
+			items = append(items, "~"+k)
+		}
+		if len(items) > 0 {
+			parts = append(parts, sec.name+" "+strings.Join(items, " "))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
 // bitsReadyNote returns a one-shot message when the session payload shows
 // environment identifiers while status is still not READY.
 func bitsReadyNote(sess *do.HostedAgentSession) string {
@@ -1111,6 +1346,8 @@ func runStatusLabel(status godo.HostedAgentSessionStatus) string {
 		return "Agent ready (detached)"
 	case godo.HostedAgentSessionStatusPaused:
 		return "Agent paused"
+	case godo.HostedAgentSessionStatusUpdating:
+		return "Applying config update…"
 	default:
 		return humanSessionStatus(status)
 	}
@@ -1202,7 +1439,7 @@ func printRunReadySummary(w io.Writer, sum runReadySummary) {
 	// A bare sandbox has no chat to launch into, so the card has to carry the
 	// commands that do drive it — this card is the only place a bare-sandbox
 	// user is told what to do next.
-	if sum.Session != nil && sum.Session.AgentKind == godo.HostedAgentKindNone {
+	if sum.Session != nil && sum.Session.HostedAgentSession != nil && isBareSandboxKind(sum.Session.AgentKind) {
 		body.WriteString(cardRow("exec", agentCLI+" exec "+ref+" -- <command>"))
 		body.WriteString(cardRow("upload", agentCLI+" upload "+ref+" --local-file <path> --workspace-path <path>"))
 		body.WriteString(cardRow("download", agentCLI+" download "+ref+" --workspace-path <path> --save-to <path>"))
@@ -1274,6 +1511,11 @@ func printSessionListItem(w io.Writer, sess *do.HostedAgentSession) {
 		meta = append(meta, colorize(createdAgo(sess.CreatedAt.Time), colMuted))
 	}
 	fmt.Fprintf(w, "  %s\n", strings.Join(meta, colorize(" · ", colMuted)))
+	// Shown without --verbose, so the list says which sessions hold a workspace.
+	// Like the show card, a session without one gets no line.
+	if ws := strings.TrimSpace(sess.WorkspaceID); ws != "" {
+		fmt.Fprintf(w, "  %s %s\n", colorize("workspace", colMuted), ws)
+	}
 	if Verbose {
 		if id := strings.TrimSpace(sess.SessionID); id != "" && id != ref {
 			fmt.Fprintf(w, "  %s\n", colorize(id, colMuted))
@@ -1315,6 +1557,27 @@ func printSessionShowCard(w io.Writer, sess *do.HostedAgentSession) {
 	if sess.ResumeOnTopoff {
 		body.WriteString(cardRow("Resume on top-off", "enabled"))
 	}
+	if ws := strings.TrimSpace(sess.WorkspaceID); ws != "" {
+		body.WriteString(cardRow("Workspace", colorize(ws, colMuted)))
+	}
+	// Only shown once the live config has moved away from the created manifest.
+	if sess.ConfigDrifted {
+		drift := "yes"
+		if d := configDiffSummary(sess.ConfigDiff); d != "" {
+			drift = d
+		}
+		body.WriteString(cardRow("Config drifted", drift))
+	}
+	if u := sess.Update; u != nil && u.State != "" {
+		last := strings.ToLower(strings.ReplaceAll(string(u.State), "_", " "))
+		if sum := configChangesSummary(u); sum != "" {
+			last += " · " + sum
+		}
+		if !u.StartedAt.Time.IsZero() {
+			last += " · " + formatCreatedAt(u.StartedAt.Time)
+		}
+		body.WriteString(cardRow("Last update", colorize(last, colMuted)))
+	}
 	if !sess.CreatedAt.Time.IsZero() {
 		body.WriteString(cardRow("Created", colorize(formatCreatedAt(sess.CreatedAt.Time), colMuted)))
 	}
@@ -1341,7 +1604,7 @@ func sessionStatusGlyph(status godo.HostedAgentSessionStatus) string {
 	switch status {
 	case godo.HostedAgentSessionStatusReady, godo.HostedAgentSessionStatusDetached:
 		return colorize("●", colSuccess)
-	case godo.HostedAgentSessionStatusProvisioning:
+	case godo.HostedAgentSessionStatusProvisioning, godo.HostedAgentSessionStatusUpdating:
 		return colorize("…", colWarning)
 	case godo.HostedAgentSessionStatusPaused:
 		return colorize("○", colWarning)
@@ -1359,7 +1622,7 @@ func colorizeSessionStatus(status godo.HostedAgentSessionStatus) string {
 	switch status {
 	case godo.HostedAgentSessionStatusReady, godo.HostedAgentSessionStatusDetached:
 		return colorize(label, colSuccess)
-	case godo.HostedAgentSessionStatusProvisioning, godo.HostedAgentSessionStatusPaused:
+	case godo.HostedAgentSessionStatusProvisioning, godo.HostedAgentSessionStatusPaused, godo.HostedAgentSessionStatusUpdating:
 		return colorize(label, colWarning)
 	case godo.HostedAgentSessionStatusFailed:
 		return colorize(label, colError)

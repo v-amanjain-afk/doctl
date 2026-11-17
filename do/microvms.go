@@ -51,9 +51,19 @@ type MicroVMsService interface {
 	List(filter MicroVMListFilter) (MicroVMs, error)
 	Get(id string) (*MicroVM, error)
 	Create(req *godo.MicroVMCreateRequest) (*MicroVM, error)
+	Update(id string, req *godo.MicroVMUpdateRequest) (*MicroVM, error)
 	Pause(id string) (*MicroVM, error)
 	Resume(id string) (*MicroVM, error)
 	Delete(id string) error
+
+	AddURL(microVMID string, req *godo.MicroVMURLCreateRequest) (*godo.MicroVMURL, error)
+	RemoveURL(microVMID, urlID string) error
+
+	// CreateAccessToken returns the token value once. ListAccessTokens never
+	// returns it.
+	CreateAccessToken(microVMID string, req *godo.MicroVMAccessTokenCreateRequest) (*godo.MicroVMAccessTokenCreated, error)
+	ListAccessTokens(microVMID string) ([]godo.MicroVMAccessToken, error)
+	RevokeAccessToken(microVMID, tokenID string) error
 
 	ListCheckpoints(microVMID string) (MicroVMCheckpoints, error)
 	CreateCheckpoint(microVMID string, req *godo.MicroVMCheckpointCreateRequest) (*MicroVMCheckpoint, error)
@@ -64,6 +74,11 @@ type MicroVMsService interface {
 
 	Exec(id string, req *godo.MicroVMExecRequest) (*godo.MicroVMExecResult, error)
 	ConsoleURL(id string, opt *godo.MicroVMConsoleOptions) (string, error)
+
+	UploadFile(id string, req *godo.MicroVMFileUploadRequest) (*godo.MicroVMFileInfo, error)
+	// DownloadFile streams a file out of the MicroVM. The caller must read
+	// Body to EOF and Close it; Body verifies the SHA-256 digest at EOF.
+	DownloadFile(id, path string) (*godo.MicroVMFileDownload, error)
 }
 
 type microVMsService struct {
@@ -131,6 +146,14 @@ func (s *microVMsService) Create(req *godo.MicroVMCreateRequest) (*MicroVM, erro
 	return &MicroVM{MicroVM: md}, nil
 }
 
+func (s *microVMsService) Update(id string, req *godo.MicroVMUpdateRequest) (*MicroVM, error) {
+	md, _, err := s.client.MicroVMs.Update(context.TODO(), id, req)
+	if err != nil {
+		return nil, err
+	}
+	return &MicroVM{MicroVM: md}, nil
+}
+
 func (s *microVMsService) Pause(id string) (*MicroVM, error) {
 	md, _, err := s.client.MicroVMs.Pause(context.TODO(), id)
 	if err != nil {
@@ -149,6 +172,40 @@ func (s *microVMsService) Resume(id string) (*MicroVM, error) {
 
 func (s *microVMsService) Delete(id string) error {
 	_, err := s.client.MicroVMs.Delete(context.TODO(), id)
+	return err
+}
+
+func (s *microVMsService) AddURL(microVMID string, req *godo.MicroVMURLCreateRequest) (*godo.MicroVMURL, error) {
+	u, _, err := s.client.MicroVMs.AddURL(context.TODO(), microVMID, req)
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+func (s *microVMsService) RemoveURL(microVMID, urlID string) error {
+	_, err := s.client.MicroVMs.RemoveURL(context.TODO(), microVMID, urlID)
+	return err
+}
+
+func (s *microVMsService) CreateAccessToken(microVMID string, req *godo.MicroVMAccessTokenCreateRequest) (*godo.MicroVMAccessTokenCreated, error) {
+	t, _, err := s.client.MicroVMs.CreateAccessToken(context.TODO(), microVMID, req)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (s *microVMsService) ListAccessTokens(microVMID string) ([]godo.MicroVMAccessToken, error) {
+	list, _, err := s.client.MicroVMs.ListAccessTokens(context.TODO(), microVMID)
+	if err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (s *microVMsService) RevokeAccessToken(microVMID, tokenID string) error {
+	_, err := s.client.MicroVMs.RevokeAccessToken(context.TODO(), microVMID, tokenID)
 	return err
 }
 
@@ -217,4 +274,14 @@ func (s *microVMsService) Exec(id string, req *godo.MicroVMExecRequest) (*godo.M
 
 func (s *microVMsService) ConsoleURL(id string, opt *godo.MicroVMConsoleOptions) (string, error) {
 	return s.client.MicroVMs.ConsoleURL(id, opt)
+}
+
+func (s *microVMsService) UploadFile(id string, req *godo.MicroVMFileUploadRequest) (*godo.MicroVMFileInfo, error) {
+	info, _, err := s.client.MicroVMs.UploadFile(context.TODO(), id, req)
+	return info, err
+}
+
+func (s *microVMsService) DownloadFile(id, path string) (*godo.MicroVMFileDownload, error) {
+	dl, _, err := s.client.MicroVMs.DownloadFile(context.TODO(), id, path)
+	return dl, err
 }

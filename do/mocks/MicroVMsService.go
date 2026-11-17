@@ -41,6 +41,21 @@ func (m *MockMicroVMsService) EXPECT() *MockMicroVMsServiceMockRecorder {
 	return m.recorder
 }
 
+// AddURL mocks base method.
+func (m *MockMicroVMsService) AddURL(microVMID string, req *godo.MicroVMURLCreateRequest) (*godo.MicroVMURL, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AddURL", microVMID, req)
+	ret0, _ := ret[0].(*godo.MicroVMURL)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// AddURL indicates an expected call of AddURL.
+func (mr *MockMicroVMsServiceMockRecorder) AddURL(microVMID, req any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddURL", reflect.TypeOf((*MockMicroVMsService)(nil).AddURL), microVMID, req)
+}
+
 // ConsoleURL mocks base method.
 func (m *MockMicroVMsService) ConsoleURL(id string, opt *godo.MicroVMConsoleOptions) (string, error) {
 	m.ctrl.T.Helper()
@@ -69,6 +84,21 @@ func (m *MockMicroVMsService) Create(req *godo.MicroVMCreateRequest) (*do.MicroV
 func (mr *MockMicroVMsServiceMockRecorder) Create(req any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockMicroVMsService)(nil).Create), req)
+}
+
+// CreateAccessToken mocks base method.
+func (m *MockMicroVMsService) CreateAccessToken(microVMID string, req *godo.MicroVMAccessTokenCreateRequest) (*godo.MicroVMAccessTokenCreated, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateAccessToken", microVMID, req)
+	ret0, _ := ret[0].(*godo.MicroVMAccessTokenCreated)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CreateAccessToken indicates an expected call of CreateAccessToken.
+func (mr *MockMicroVMsServiceMockRecorder) CreateAccessToken(microVMID, req any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateAccessToken", reflect.TypeOf((*MockMicroVMsService)(nil).CreateAccessToken), microVMID, req)
 }
 
 // CreateCheckpoint mocks base method.
@@ -112,6 +142,21 @@ func (m *MockMicroVMsService) DeleteCheckpoint(id string) error {
 func (mr *MockMicroVMsServiceMockRecorder) DeleteCheckpoint(id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteCheckpoint", reflect.TypeOf((*MockMicroVMsService)(nil).DeleteCheckpoint), id)
+}
+
+// DownloadFile mocks base method.
+func (m *MockMicroVMsService) DownloadFile(id, path string) (*godo.MicroVMFileDownload, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DownloadFile", id, path)
+	ret0, _ := ret[0].(*godo.MicroVMFileDownload)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DownloadFile indicates an expected call of DownloadFile.
+func (mr *MockMicroVMsServiceMockRecorder) DownloadFile(id, path any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DownloadFile", reflect.TypeOf((*MockMicroVMsService)(nil).DownloadFile), id, path)
 }
 
 // Exec mocks base method.
@@ -189,6 +234,21 @@ func (mr *MockMicroVMsServiceMockRecorder) List(filter any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockMicroVMsService)(nil).List), filter)
 }
 
+// ListAccessTokens mocks base method.
+func (m *MockMicroVMsService) ListAccessTokens(microVMID string) ([]godo.MicroVMAccessToken, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListAccessTokens", microVMID)
+	ret0, _ := ret[0].([]godo.MicroVMAccessToken)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListAccessTokens indicates an expected call of ListAccessTokens.
+func (mr *MockMicroVMsServiceMockRecorder) ListAccessTokens(microVMID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListAccessTokens", reflect.TypeOf((*MockMicroVMsService)(nil).ListAccessTokens), microVMID)
+}
+
 // ListCheckpoints mocks base method.
 func (m *MockMicroVMsService) ListCheckpoints(microVMID string) (do.MicroVMCheckpoints, error) {
 	m.ctrl.T.Helper()
@@ -219,6 +279,20 @@ func (mr *MockMicroVMsServiceMockRecorder) Pause(id any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Pause", reflect.TypeOf((*MockMicroVMsService)(nil).Pause), id)
 }
 
+// RemoveURL mocks base method.
+func (m *MockMicroVMsService) RemoveURL(microVMID, urlID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RemoveURL", microVMID, urlID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RemoveURL indicates an expected call of RemoveURL.
+func (mr *MockMicroVMsServiceMockRecorder) RemoveURL(microVMID, urlID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveURL", reflect.TypeOf((*MockMicroVMsService)(nil).RemoveURL), microVMID, urlID)
+}
+
 // Resume mocks base method.
 func (m *MockMicroVMsService) Resume(id string) (*do.MicroVM, error) {
 	m.ctrl.T.Helper()
@@ -232,4 +306,48 @@ func (m *MockMicroVMsService) Resume(id string) (*do.MicroVM, error) {
 func (mr *MockMicroVMsServiceMockRecorder) Resume(id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Resume", reflect.TypeOf((*MockMicroVMsService)(nil).Resume), id)
+}
+
+// RevokeAccessToken mocks base method.
+func (m *MockMicroVMsService) RevokeAccessToken(microVMID, tokenID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RevokeAccessToken", microVMID, tokenID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RevokeAccessToken indicates an expected call of RevokeAccessToken.
+func (mr *MockMicroVMsServiceMockRecorder) RevokeAccessToken(microVMID, tokenID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RevokeAccessToken", reflect.TypeOf((*MockMicroVMsService)(nil).RevokeAccessToken), microVMID, tokenID)
+}
+
+// Update mocks base method.
+func (m *MockMicroVMsService) Update(id string, req *godo.MicroVMUpdateRequest) (*do.MicroVM, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Update", id, req)
+	ret0, _ := ret[0].(*do.MicroVM)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Update indicates an expected call of Update.
+func (mr *MockMicroVMsServiceMockRecorder) Update(id, req any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockMicroVMsService)(nil).Update), id, req)
+}
+
+// UploadFile mocks base method.
+func (m *MockMicroVMsService) UploadFile(id string, req *godo.MicroVMFileUploadRequest) (*godo.MicroVMFileInfo, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UploadFile", id, req)
+	ret0, _ := ret[0].(*godo.MicroVMFileInfo)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UploadFile indicates an expected call of UploadFile.
+func (mr *MockMicroVMsServiceMockRecorder) UploadFile(id, req any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UploadFile", reflect.TypeOf((*MockMicroVMsService)(nil).UploadFile), id, req)
 }

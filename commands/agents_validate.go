@@ -38,10 +38,13 @@ var knownAgentAdapters = map[string]struct{}{
 	"opencode":         {},
 	"codex":            {},
 	"codex-agentapi":   {},
-	"hermes":           {}, // runnable, but outside the default server-side agent-kind set
+	"hermes":           {}, // runnable (AGENT_KIND_HERMES): the hermes gateway in the coding-hermes template
 	"langgraph":        {}, // runnable (AGENT_KIND_LANGGRAPH)
+	"openhands":        {}, // runnable (AGENT_KIND_OPENHANDS): OpenHands Agent Server in the openhands template
+	"minimax-code":     {}, // runnable (AGENT_KIND_MINIMAX_CODE): MiniMax Code (mcode) in the coding-minimax-code template
 	"custom":           {},
-	"none":             {}, // bare sandbox (AGENT_KIND_NONE): no agent in the guest
+	"none":             {}, // bare sandbox: no agent in the guest
+	"sandbox":          {}, // equal spelling of none
 	"codex-cli":        {}, // deprecated alias
 	"openai-agents":    {}, // declared, not yet runnable
 	"claude-agent-sdk": {},
@@ -196,8 +199,21 @@ func manifestAdapter(doc map[string]any, legacy bool) string {
 		}
 		return ""
 	}
-	agent, _ := yamlString(doc["agent"])
-	return strings.TrimSpace(agent)
+	adapter, _, _ := flatManifestAdapter(doc)
+	return adapter
+}
+
+// flatManifestAdapter returns a flat manifest's adapter and the key it was
+// declared under: harness, or agent, its original name. both reports a
+// document that sets the two, which the API refuses; callers that only route
+// on the value read harness.
+func flatManifestAdapter(doc map[string]any) (adapter, key string, both bool) {
+	both = hasYAMLKey(doc, "harness") && hasYAMLKey(doc, "agent")
+	if h, _ := yamlString(doc["harness"]); strings.TrimSpace(h) != "" || !hasYAMLKey(doc, "agent") {
+		return strings.TrimSpace(h), "harness", both
+	}
+	a, _ := yamlString(doc["agent"])
+	return strings.TrimSpace(a), "agent", both
 }
 
 func bytesTrimSpace(b []byte) []byte {
@@ -210,12 +226,14 @@ func hasYAMLKey(doc map[string]any, key string) bool {
 }
 
 func validateFlatManifest(doc map[string]any, out *agentManifestValidation) {
-	agent, _ := yamlString(doc["agent"])
-	agent = strings.TrimSpace(agent)
-	if agent == "" {
-		out.Errors = append(out.Errors, `flat manifest requires top-level "agent" (e.g. agent: opencode)`)
-	} else {
-		validateAdapter(agent, "agent", out)
+	adapter, key, both := flatManifestAdapter(doc)
+	switch {
+	case both:
+		out.Errors = append(out.Errors, `set "harness" or "agent", not both; they are the same key ("agent" is its original name)`)
+	case adapter == "":
+		out.Errors = append(out.Errors, `flat manifest requires top-level "harness" (e.g. harness: opencode)`)
+	default:
+		validateAdapter(adapter, key, out)
 	}
 
 	if name, ok := yamlString(doc["name"]); ok && strings.TrimSpace(name) != "" {
@@ -271,7 +289,7 @@ func validateEnvelopeManifest(doc map[string]any, out *agentManifestValidation) 
 
 func validateAdapter(adapter, path string, out *agentManifestValidation) {
 	if _, ok := knownAgentAdapters[adapter]; !ok {
-		out.Errors = append(out.Errors, fmt.Sprintf("%s %q is not a known adapter (want claude-code, opencode, codex, codex-agentapi, custom, none, …)", path, adapter))
+		out.Errors = append(out.Errors, fmt.Sprintf("%s %q is not a known adapter (want claude-code, opencode, codex, codex-agentapi, openhands, minimax-code, custom, none, …)", path, adapter))
 		return
 	}
 	switch adapter {
@@ -366,7 +384,7 @@ func validateManifestEnvAndSecrets(adapter string, env map[string]string, secret
 		}
 	}
 
-	validateAdapterModelEnv(adapter, env, envPath, out)
+	validateAdapterModelEnv(adapter, env, slots, envPath, out)
 }
 
 // validateManifestKeysWhitespace catches keys tainted by copy-paste invisible
@@ -500,6 +518,34 @@ func validateManifestSkills(raw any, path string, out *agentManifestValidation) 
 }
 
 const (
+	// Bare-scalar values accepted for `egress:`. Mirror harness-api's
+	// egressUnrestrictedLiteral / egressDenyAllLiteral.
+	egressUnrestrictedScalar = "unrestricted"
+	egressDenyAllScalar      = "none"
+)
+
+// egressEmptyListWithVPCMsg is harness-api's error for an empty allowlist with
+// vpc_uuid / subnet_uuid, verbatim (agentspec.go, Egress.validate).
+const egressEmptyListWithVPCMsg = "an empty allow_hosts/allow_ips with vpc_uuid is ambiguous: drop the empty list for VPC with no ACL, or drop vpc_uuid for deny-all"
+
+// egressNullFix is harness-api's fix text for a null egress or allowlist key.
+// It differs by format: `egress: none` only exists in the flat format.
+func egressNullFix(legacy bool) string {
+	if legacy {
+		return "write allow: [] to block all, or unrestricted: true / omit it"
+	}
+	return "write `egress: none` to block all, or `unrestricted` / omit it"
+}
+
+// egressDenyAllFix is how to block all egress, in the manifest's own format.
+func egressDenyAllFix(legacy bool) string {
+	if legacy {
+		return "write allow: [] to block all egress"
+	}
+	return "write `egress: none` (or allow_hosts: []) to block all egress"
+}
+
+const (
 	egressFormatFlat           = "flat"
 	egressFormatLegacyEnvelope = "legacy envelope"
 )
@@ -520,6 +566,18 @@ var egressAliasFields = []egressAliasField{
 	{flatKey: "allow_ips", legacyKey: "allowIps"},
 	{flatKey: "vpc_uuid", legacyKey: "vpcUuid"},
 	{flatKey: "subnet_uuid", legacyKey: "subnetUuid"},
+}
+
+// egressKeysForFormat returns the hosts, ips, vpc and subnet key names for the
+// manifest's format.
+func egressKeysForFormat(legacy bool) (hosts, ips, vpc, subnet string) {
+	pick := func(f egressAliasField) string {
+		if legacy {
+			return f.legacyKey
+		}
+		return f.flatKey
+	}
+	return pick(egressAliasFields[0]), pick(egressAliasFields[1]), pick(egressAliasFields[2]), pick(egressAliasFields[3])
 }
 
 func egressKnownKeysForFormat(legacy bool) map[string]struct{} {
@@ -557,9 +615,11 @@ func egressWrongFormatHint(k string, legacy bool) (hint string, matched bool) {
 }
 
 // validateManifestEgress checks the egress policy oneOf (MARSOHS-1219): omitted,
-// "unrestricted", host list, or object with allow_hosts / allow_ips / vpc_uuid /
-// subnet_uuid. Structural checks only — advisory wording (e.g. IP-only ACL) is
-// harness-api session.warnings, not duplicated here (MARSOHS-1404).
+// "unrestricted", "none" (deny all), host list, or object with allow_hosts /
+// allow_ips / vpc_uuid / subnet_uuid. An allowlist written present-but-empty
+// also means deny-all (MARSOHS-2118). Structural checks only: advisory wording
+// (e.g. IP-only ACL) is harness-api session.warnings, not duplicated here
+// (MARSOHS-1404).
 func validateManifestEgress(doc map[string]any, legacy bool, out *agentManifestValidation) {
 	raw, path, ok := extractManifestEgress(doc, legacy)
 	if !ok {
@@ -596,13 +656,21 @@ func extractManifestEgress(doc map[string]any, legacy bool) (raw any, path strin
 }
 
 func validateEgressValue(raw any, path string, legacy bool, out *agentManifestValidation) {
-	switch v := raw.(type) {
-	case nil:
-		// Explicit null is treated like omitted by the server; nothing to check.
+	if raw == nil {
+		out.Errors = append(out.Errors, fmt.Sprintf("%s is empty; %s", path, egressNullFix(legacy)))
 		return
+	}
+	// The legacy envelope decodes egress into an object, so harness-api
+	// rejects a scalar or list there. Those forms are flat-only.
+	if _, isMap := yamlMap(raw); legacy && !isMap {
+		out.Errors = append(out.Errors, fmt.Sprintf("%s must be an object in the legacy envelope; use allow: [] to block all, or unrestricted: true", path))
+		return
+	}
+	switch v := raw.(type) {
 	case string:
-		if strings.TrimSpace(v) != "unrestricted" {
-			out.Errors = append(out.Errors, fmt.Sprintf(`%s scalar must be "unrestricted" (got %q)`, path, v))
+		// Exact match, like harness-api: no trimming, no case folding.
+		if v != egressUnrestrictedScalar && v != egressDenyAllScalar {
+			out.Errors = append(out.Errors, fmt.Sprintf(`%s scalar must be %q or %q (got %q)`, path, egressUnrestrictedScalar, egressDenyAllScalar, v))
 		}
 		return
 	case []any:
@@ -614,7 +682,7 @@ func validateEgressValue(raw any, path string, legacy bool, out *agentManifestVa
 		validateEgressObject(m, path, legacy, out)
 		return
 	}
-	out.Errors = append(out.Errors, fmt.Sprintf(`%s must be "unrestricted", a host list, or an object`, path))
+	out.Errors = append(out.Errors, fmt.Sprintf(`%s must be %q, %q, a host list, or an object`, path, egressUnrestrictedScalar, egressDenyAllScalar))
 }
 
 func validateEgressHostList(list []any, path string, out *agentManifestValidation) {
@@ -646,6 +714,12 @@ func validateEgressObject(m map[string]any, path string, legacy bool, out *agent
 		if _, ok := known[k]; ok {
 			continue
 		}
+		// harness-api has no denyAll key; the entry only gives a better hint
+		// than a bare "unknown field".
+		if k == "denyAll" {
+			out.Errors = append(out.Errors, fmt.Sprintf("%s.denyAll: is not a manifest key; %s", path, egressDenyAllFix(legacy)))
+			continue
+		}
 		if hint, ok := egressWrongFormatHint(k, legacy); ok {
 			out.Errors = append(out.Errors, fmt.Sprintf("%s.%s: %s", path, k, hint))
 			continue
@@ -653,21 +727,15 @@ func validateEgressObject(m map[string]any, path string, legacy bool, out *agent
 		out.Errors = append(out.Errors, fmt.Sprintf("%s.%s: unknown field", path, k))
 	}
 
-	hostsKey, ipsKey, vpcKey, subnetKey := "allow_hosts", "allow_ips", "vpc_uuid", "subnet_uuid"
-	if legacy {
-		hostsKey, ipsKey, vpcKey, subnetKey = "allow", "allowIps", "vpcUuid", "subnetUuid"
-	}
+	hostsKey, ipsKey, vpcKey, subnetKey := egressKeysForFormat(legacy)
 
 	if legacy {
 		if ur, present := m["unrestricted"]; present {
+			// harness-api decodes this into a Go bool, so a string is a 400.
 			switch t := ur.(type) {
 			case bool:
 				if !t {
 					out.Errors = append(out.Errors, fmt.Sprintf(`%s.unrestricted: must be true when set`, path))
-				}
-			case string:
-				if strings.TrimSpace(t) != "unrestricted" && strings.ToLower(strings.TrimSpace(t)) != "true" {
-					out.Errors = append(out.Errors, fmt.Sprintf(`%s.unrestricted: must be true when set (got %q)`, path, t))
 				}
 			default:
 				out.Errors = append(out.Errors, fmt.Sprintf("%s.unrestricted: must be a boolean", path))
@@ -675,11 +743,13 @@ func validateEgressObject(m map[string]any, path string, legacy bool, out *agent
 		}
 	}
 
+	validateEgressDenyAllCombination(m, path, legacy, out)
+
 	if hostsRaw, present := m[hostsKey]; present {
-		validateEgressAllowHosts(hostsRaw, path, hostsKey, ipsKey, out)
+		validateEgressAllowHosts(hostsRaw, path, hostsKey, ipsKey, legacy, out)
 	}
 	if ipsRaw, present := m[ipsKey]; present {
-		validateEgressAllowIPs(ipsRaw, path, ipsKey, out)
+		validateEgressAllowIPs(ipsRaw, path, ipsKey, legacy, out)
 	}
 
 	if vpcRaw, hasVPC := m[vpcKey]; hasVPC {
@@ -697,7 +767,78 @@ func validateEgressObject(m map[string]any, path string, legacy bool, out *agent
 	// flatPathWarnings) exactly once, after create (MARSOHS-1404).
 }
 
-func validateEgressAllowHosts(raw any, path, hostsKey, ipsKey string, out *agentManifestValidation) {
+// validateEgressDenyAllCombination mirrors harness-api's Egress.validate: an
+// object is deny-all when an allowlist key is present but empty and the other
+// list names nothing. A missing or null key is not "present". Deny-all cannot
+// be combined with unrestricted or a VPC/subnet. Checks that need other
+// context stay server-only: deny-all with URL-bound credentials, and legacy
+// unrestricted with a non-empty allowlist.
+func validateEgressDenyAllCombination(m map[string]any, path string, legacy bool, out *agentManifestValidation) {
+	hostsKey, ipsKey, vpcKey, subnetKey := egressKeysForFormat(legacy)
+
+	// listState reports whether a list key is present (non-null) and how many
+	// entries it has. A value that is not a list is reported by the per-key
+	// validators, so it counts as absent here.
+	listState := func(key string) (present bool, n int) {
+		raw, ok := m[key]
+		if !ok || raw == nil {
+			return false, 0
+		}
+		list, isList := yamlList(raw)
+		if !isList {
+			return false, 0
+		}
+		return true, len(list)
+	}
+	hostsPresent, hostsLen := listState(hostsKey)
+	ipsPresent, ipsLen := listState(ipsKey)
+
+	emptyList := (hostsPresent || ipsPresent) && hostsLen == 0 && ipsLen == 0
+	if !emptyList {
+		return
+	}
+
+	// emptyList means both lists are empty, so only unrestricted (legacy) and a
+	// VPC/subnet can conflict with it.
+	unrestricted := false
+	if legacy {
+		unrestricted, _ = m["unrestricted"].(bool)
+	}
+	isSet := func(key string) bool {
+		raw, ok := m[key]
+		if !ok || raw == nil {
+			return false
+		}
+		s, isString := yamlString(raw)
+		return !isString || strings.TrimSpace(s) != ""
+	}
+	vpcSet, subnetSet := isSet(vpcKey), isSet(subnetKey)
+
+	switch {
+	case vpcSet && !unrestricted:
+		// An empty list plus a VPC used to mean "VPC, no ACL". Use the server's
+		// wording so users are not nudged to drop the VPC and go deny-all.
+		out.Errors = append(out.Errors, fmt.Sprintf("%s: %s", path, egressEmptyListWithVPCMsg))
+	case unrestricted || vpcSet:
+		var conflicts []string
+		if unrestricted {
+			conflicts = append(conflicts, "unrestricted")
+		}
+		if vpcSet {
+			conflicts = append(conflicts, vpcKey)
+		}
+		if subnetSet {
+			conflicts = append(conflicts, subnetKey)
+		}
+		out.Errors = append(out.Errors, fmt.Sprintf("%s: deny-all (an empty allowlist) cannot be combined with %s", path, strings.Join(conflicts, ", ")))
+	}
+}
+
+func validateEgressAllowHosts(raw any, path, hostsKey, ipsKey string, legacy bool, out *agentManifestValidation) {
+	if raw == nil {
+		out.Errors = append(out.Errors, fmt.Sprintf("%s.%s is empty; %s", path, hostsKey, egressNullFix(legacy)))
+		return
+	}
 	// Legacy envelope uses allow: [{host: "..."}]; flat authoring uses
 	// allow_hosts: ["..."].
 	if list, ok := yamlList(raw); ok {
@@ -733,7 +874,11 @@ func validateEgressAllowHosts(raw any, path, hostsKey, ipsKey string, out *agent
 	out.Errors = append(out.Errors, fmt.Sprintf("%s.%s: must be a list", path, hostsKey))
 }
 
-func validateEgressAllowIPs(raw any, path, ipsKey string, out *agentManifestValidation) {
+func validateEgressAllowIPs(raw any, path, ipsKey string, legacy bool, out *agentManifestValidation) {
+	if raw == nil {
+		out.Errors = append(out.Errors, fmt.Sprintf("%s.%s is empty; %s", path, ipsKey, egressNullFix(legacy)))
+		return
+	}
 	list, ok := yamlList(raw)
 	if !ok {
 		out.Errors = append(out.Errors, fmt.Sprintf("%s.%s: must be a list", path, ipsKey))
@@ -791,7 +936,7 @@ func firstValue(m map[string]any, keys ...string) any {
 // validateAdapterModelEnv warns on known silent-failure env key footguns from
 // production incidents (wrong model/key names still create a session, then the
 // agent appears "not logged in" or never streams).
-func validateAdapterModelEnv(adapter string, env map[string]string, envPath string, out *agentManifestValidation) {
+func validateAdapterModelEnv(adapter string, env map[string]string, secretSlots map[string]struct{}, envPath string, out *agentManifestValidation) {
 	_, hasModel := env["MODEL"]
 	_, hasHarnessModel := env["HARNESS_INFERENCE_MODEL"]
 	_, hasHarnessBase := env["HARNESS_INFERENCE_BASE_URL"]
@@ -813,8 +958,12 @@ func validateAdapterModelEnv(adapter string, env map[string]string, envPath stri
 		if hasModel && !hasAnthropicModel {
 			out.Warnings = append(out.Warnings, fmt.Sprintf("%s.MODEL: set for adapter claude-code, but %s.ANTHROPIC_MODEL is missing; claude-code expects ANTHROPIC_MODEL (sessions may fail with \"Not logged in\")", envPath, envPath))
 		}
-		if hasHarnessModel && !hasAnthropicModel {
-			out.Warnings = append(out.Warnings, fmt.Sprintf("%s.HARNESS_INFERENCE_MODEL: set for adapter claude-code, but %s.ANTHROPIC_MODEL is missing; prefer ANTHROPIC_MODEL + ANTHROPIC_API_KEY (or declare the key under secrets)", envPath, envPath))
+		// claude-code honors HARNESS_INFERENCE_MODEL only when the harness
+		// inference group is selected, i.e. no native ANTHROPIC_API_KEY is set.
+		nativeKey := hasAnthropicKey || hasStringKey(secretSlots, "ANTHROPIC_API_KEY")
+		harnessKey := hasHarnessKey || hasStringKey(secretSlots, "HARNESS_INFERENCE_API_KEY")
+		if hasHarnessModel && !hasAnthropicModel && (nativeKey || !harnessKey) {
+			out.Warnings = append(out.Warnings, fmt.Sprintf("%s.HARNESS_INFERENCE_MODEL: set for adapter claude-code, but %s.ANTHROPIC_MODEL is missing; HARNESS_INFERENCE_MODEL is only used with HARNESS_INFERENCE_API_KEY (declared under secrets) and no ANTHROPIC_API_KEY; otherwise set ANTHROPIC_MODEL", envPath, envPath))
 		}
 		if hasAnthropicKey && !hasAnthropicModel && (hasModel || hasHarnessModel) {
 			out.Warnings = append(out.Warnings, fmt.Sprintf("%s.ANTHROPIC_API_KEY: set without %s.ANTHROPIC_MODEL; set ANTHROPIC_MODEL explicitly for claude-code", envPath, envPath))
@@ -1081,7 +1230,7 @@ func looksLikeFieldPath(s string) bool {
 		strings.HasPrefix(s, "permissions."), strings.HasPrefix(s, "skills["),
 		strings.HasPrefix(s, "egress"), strings.HasPrefix(s, "sandbox.egress"),
 		strings.HasPrefix(s, "spec.sandbox.egress"), strings.HasPrefix(s, "spec.egress"),
-		s == "agent", s == "name", s == "apiVersion", s == "kind", s == "spec.runtime",
+		s == "harness", s == "agent", s == "name", s == "apiVersion", s == "kind", s == "spec.runtime",
 		strings.HasPrefix(s, "spec.runtime"):
 		return true
 	default:

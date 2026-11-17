@@ -421,13 +421,14 @@ func TestDryRunOutputPipesIntoConfigCreate(t *testing.T) {
 
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		tm.hostedAgents.EXPECT().
-			CreateAgentConfig(gomock.Any()).
-			DoAndReturn(func(req *godo.HostedAgentConfigCreateRequest) (*godo.HostedAgentConfig, error) {
+			CreateAgentConfig(gomock.Any(), false).
+			DoAndReturn(func(req *godo.HostedAgentConfigCreateRequest, manageModelAccessKey bool) (*godo.HostedAgentConfig, error) {
 				assert.Equal(t, "kimi-k3-reviewer", req.Name)
 				assert.Contains(t, req.ManifestYAML, "adamdev/orders-api")
 				assert.Contains(t, req.ManifestYAML, "sk-ant-real",
 					"--secret on this side has to fill the slot the dry run redacted")
 				assert.NotContains(t, req.ManifestYAML, redactedSecretValue)
+				assert.False(t, manageModelAccessKey)
 				return &godo.HostedAgentConfig{ID: "cfg_piped", Name: "kimi-k3-reviewer"}, nil
 			})
 
@@ -1175,9 +1176,6 @@ func TestLaunchNewSession_BareSandboxRefusedBeforeCreating(t *testing.T) {
 	})
 }
 
-// `none` is the manifest's word for a session with no agent, not a --harness
-// value. A --spec file saying `agent: none` still works (the test below);
-// typing it as a harness is refused and pointed at the one spelling we teach.
 // Derived from addAgentCreationFlags rather than hand-listed, so a flag added
 // there and forgotten in the guard fails here instead of being silently
 // dropped on `launch <session>`. --template was missing exactly that way.
@@ -1220,8 +1218,12 @@ func TestRejectCreationFlagsForExistingSession_CoversEveryCreationFlag(t *testin
 	require.NotZero(t, checked, "the flag set should not be empty; the guard would assert nothing")
 }
 
+// `none` (or its equal spelling `sandbox`) is the manifest's word for a session
+// with no agent, not a --harness value. A --spec file saying `agent: none`
+// still works; typing it as a harness is refused and pointed at the one
+// spelling we teach.
 func TestResolveAgentCreationSource_HarnessNoneIsRefused(t *testing.T) {
-	for _, typed := range []string{"none", "None", " NONE "} {
+	for _, typed := range []string{"none", "None", " NONE ", "sandbox", "Sandbox"} {
 		t.Run(typed, func(t *testing.T) {
 			withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 				t.Chdir(t.TempDir())
@@ -1239,15 +1241,19 @@ func TestResolveAgentCreationSource_HarnessNoneIsRefused(t *testing.T) {
 // A manifest naming `agent: none` has to be refused on the same footing as the
 // flag — the flag is a convenience, the manifest is the contract.
 func TestLaunchNewSession_BareSandboxManifestRefused(t *testing.T) {
-	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
-		stubInteractiveTerminal(t, true)
-		dir := t.TempDir()
-		path := filepath.Join(dir, "agents.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("agent: none\nname: eval-runner\n"), 0o644))
-		config.Doit.Set(config.NS, doctl.ArgAgentSpec, path)
+	for _, agent := range []string{"none", "sandbox"} {
+		t.Run(agent, func(t *testing.T) {
+			withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+				stubInteractiveTerminal(t, true)
+				dir := t.TempDir()
+				path := filepath.Join(dir, "agents.yaml")
+				require.NoError(t, os.WriteFile(path, []byte("agent: "+agent+"\nname: eval-runner\n"), 0o644))
+				config.Doit.Set(config.NS, doctl.ArgAgentSpec, path)
 
-		err := launchNewSession(config)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "this session runs none")
-	})
+				err := launchNewSession(config)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "this session runs none")
+			})
+		})
+	}
 }

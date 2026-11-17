@@ -54,7 +54,7 @@ func AgentConfigs() *Command {
 		agentsConfigCreateHelpMD,
 		Writer, append(ns, aliasOpt("c"),
 			displayerType(&displayers.HostedAgentConfig{}))...)
-	AddStringFlag(cmdCreate, doctl.ArgAgentSpec, "", "", `Path to an agent manifest in YAML or JSON. Prefer flat format (top-level name + agent), e.g. "name: my-config\nagent: opencode". Set to "-" to read from stdin. ${VAR} references are resolved from the local environment.`, requiredOpt())
+	AddStringFlag(cmdCreate, doctl.ArgAgentSpec, "", "", `Path to an agent manifest in YAML or JSON. Prefer flat format (top-level name + harness), e.g. "name: my-config\nharness: opencode"; agent is the original name of harness and still works. Set to "-" to read from stdin. ${VAR} references are resolved from the local environment.`, requiredOpt())
 	AddStringFlag(cmdCreate, doctl.ArgAgentName, "", "", "Team-unique name for the config", requiredOpt())
 	AddStringSliceFlag(cmdCreate, doctl.ArgAgentSecret, "", nil, agentSecretFlagDesc)
 	cmdCreate.Example = agentCLI + ` config create --spec agent-spec.yaml --name my-config; ` + agentCLI + ` config create --spec agent-spec.yaml --name my-config --secret ANTHROPIC_API_KEY=@~/.secrets/anthropic.key`
@@ -150,7 +150,7 @@ func RunAgentsConfigCreate(c *CmdConfig) error {
 	cfg, err := c.HostedAgents().CreateAgentConfig(&godo.HostedAgentConfigCreateRequest{
 		Name:         name,
 		ManifestYAML: string(manifest),
-	})
+	}, needsManagedModelAccessKey(manifest))
 	if err != nil {
 		return err
 	}
@@ -313,10 +313,17 @@ func RunAgentsConfigStartSession(c *CmdConfig) error {
 	if err != nil {
 		return err
 	}
+	region, err := agentRegionFlag()
+	if err != nil {
+		return err
+	}
 	sess, err := c.HostedAgents().CreateSessionFromConfig(&godo.HostedAgentSessionFromConfigRequest{
 		Name:           name,
 		ConfigID:       configID,
 		ResumeOnTopoff: resumeOnTopoff,
+		// A placement check, not a routing instruction: the host already chose
+		// the region, and the server rejects a body region that disagrees.
+		Region: region,
 	})
 	if err != nil {
 		return err

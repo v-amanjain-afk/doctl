@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
 const (
 	gradientBasePath                         = "/v2/gen-ai/agents"
 	agentModelBasePath                       = "/v2/gen-ai/models"
+	modelCatalogV2BasePath                   = agentModelBasePath + "/catalog_v2"
 	inferenceRoutersBasePath                 = agentModelBasePath + "/routers"
 	inferenceRouterTaskPresetsPath           = inferenceRoutersBasePath + "/tasks/presets"
 	datacenterRegionsPath                    = "/v2/gen-ai/regions"
@@ -116,14 +118,15 @@ const (
 	ModelEvaluationRunFailed              ModelEvaluationRunStatus = "MODEL_EVALUATION_RUN_FAILED"
 )
 
-// CandidateModelSource indicates whether evaluation inference runs against the
-// serverless platform, a dedicated deployment, or a model router.
+// CandidateModelSource indicates whether the evaluation candidate is a served
+// model (serverless, dedicated, or router) or an OHS-hosted agent config.
 type CandidateModelSource string
 
 const (
 	CandidateModelSourceServerless CandidateModelSource = "CANDIDATE_MODEL_SOURCE_SERVERLESS"
 	CandidateModelSourceDedicated  CandidateModelSource = "CANDIDATE_MODEL_SOURCE_DEDICATED"
 	CandidateModelSourceRouter     CandidateModelSource = "CANDIDATE_MODEL_SOURCE_ROUTER"
+	CandidateModelSourceAgent      CandidateModelSource = "CANDIDATE_MODEL_SOURCE_AGENT"
 )
 
 // ModelEvaluationRunSortField is the field used to sort model evaluation run
@@ -154,6 +157,30 @@ const (
 	EvaluationDatasetTypeADK     EvaluationDatasetType = "EVALUATION_DATASET_TYPE_ADK"
 	EvaluationDatasetTypeNonADK  EvaluationDatasetType = "EVALUATION_DATASET_TYPE_NON_ADK"
 	EvaluationDatasetTypeModel   EvaluationDatasetType = "EVALUATION_DATASET_TYPE_MODEL"
+)
+
+// EvaluationDatasetParadigm is the row/content shape of a dataset, orthogonal
+// to EvaluationDatasetType (e.g. a model dataset can be single- or multi-turn).
+type EvaluationDatasetParadigm string
+
+const (
+	EvaluationDatasetParadigmSingleTurn EvaluationDatasetParadigm = "EVALUATION_DATASET_PARADIGM_SINGLE_TURN"
+	EvaluationDatasetParadigmMultiTurn  EvaluationDatasetParadigm = "EVALUATION_DATASET_PARADIGM_MULTI_TURN"
+	EvaluationDatasetParadigmCoding     EvaluationDatasetParadigm = "EVALUATION_DATASET_PARADIGM_CODING"
+	EvaluationDatasetParadigmNPlus1     EvaluationDatasetParadigm = "EVALUATION_DATASET_PARADIGM_N_PLUS_1"
+)
+
+// PresetSaveSection names a self-contained group of fields that can be
+// persisted when creating a model evaluation run as a reusable preset.
+type PresetSaveSection string
+
+const (
+	PresetSaveSectionUnspecified  PresetSaveSection = "PRESET_SAVE_SECTION_UNSPECIFIED"
+	PresetSaveSectionCandidate    PresetSaveSection = "PRESET_SAVE_SECTION_CANDIDATE"
+	PresetSaveSectionMetrics      PresetSaveSection = "PRESET_SAVE_SECTION_METRICS"
+	PresetSaveSectionJudge        PresetSaveSection = "PRESET_SAVE_SECTION_JUDGE"
+	PresetSaveSectionDataset      PresetSaveSection = "PRESET_SAVE_SECTION_DATASET"
+	PresetSaveSectionSystemPrompt PresetSaveSection = "PRESET_SAVE_SECTION_SYSTEM_PROMPT"
 )
 
 // AgentPlatformService is an interface for interfacing with the Agent Platform Agent endpoints
@@ -214,6 +241,8 @@ type AgentPlatformService interface {
 	ListAvailableModels(context.Context, *ListOptions) ([]*Model, *Response, error)
 	SearchModels(context.Context, string) ([]string, *Response, error)
 	GetModelByUUID(context.Context, string) (*Model, *Response, error)
+	ListModelCatalogV2(context.Context, *ModelCatalogV2ListOptions) (*ModelCatalogV2List, *Response, error)
+	GetModelCatalogCardV2(context.Context, string, string) (*ModelCatalogEntryV2, *Response, error)
 	ListDatacenterRegions(context.Context, *bool, *bool) ([]*DatacenterRegions, *Response, error)
 	ListCustomModels(ctx context.Context, opt *CustomModelListOptions) (*CustomModelListResponse, *Response, error)
 	GetCustomModel(ctx context.Context, uuid string) (*CustomModel, *Response, error)
@@ -235,7 +264,9 @@ type AgentPlatformService interface {
 	ListModelEvaluationRuns(ctx context.Context, opt *ModelEvaluationRunListOptions) (*ModelEvaluationRunListResponse, *Response, error)
 	ListModelEvaluationPresets(ctx context.Context) (*ModelEvaluationPresetListResponse, *Response, error)
 	ListModelEvaluationMetrics(ctx context.Context) (*ModelEvaluationMetricListResponse, *Response, error)
+	ListModelEvaluationMetricsWithOptions(ctx context.Context, opt *ModelEvaluationMetricListOptions) (*ModelEvaluationMetricListResponse, *Response, error)
 	ListEvaluationDatasets(ctx context.Context, opt *EvaluationDatasetListOptions) (*EvaluationDatasetListResponse, *Response, error)
+	CreateEvaluationDataset(ctx context.Context, createRequest *CreateEvaluationDatasetRequest) (*CreateEvaluationDatasetResponse, *Response, error)
 	DeleteEvaluationDataset(ctx context.Context, datasetUUID string) (*EvaluationDatasetDeleteResponse, *Response, error)
 	CreateScenarioSetUploadPresignedURLs(ctx context.Context, createRequest *CreateScenarioSetUploadPresignedURLsRequest) (*CreateScenarioSetUploadPresignedURLsResponse, *Response, error)
 	CreateScenarioSet(ctx context.Context, createRequest *CreateScenarioSetRequest) (*ScenarioSet, *Response, error)
@@ -255,10 +286,10 @@ type AgentPlatformService interface {
 	UpdateSimulationRun(ctx context.Context, runUUID string, updateRequest *UpdateSimulationRunRequest) (*SimulationRun, *Response, error)
 	CancelSimulationRun(ctx context.Context, runUUID string) (*SimulationRun, *Response, error)
 	DeleteSimulationRun(ctx context.Context, runUUID string) (*SimulationRunDeleteResponse, *Response, error)
-	ListSimulationJourneys(ctx context.Context, runUUID string, opt *SimulationJourneyListOptions) (*SimulationJourneyListResponse, *Response, error)
-	GetSimulationJourney(ctx context.Context, runUUID, journeyUUID string) (*SimulationJourney, *Response, error)
-	GetSimulationJourneyTrajectoryURL(ctx context.Context, runUUID, journeyUUID string) (*SimulationJourneyTrajectoryURLResponse, *Response, error)
-	GetSimulationJourneyTrajectory(ctx context.Context, runUUID, journeyUUID string) (*SimulationTrajectory, *Response, error)
+	ListSimulationEpisodes(ctx context.Context, runUUID string, opt *SimulationEpisodeListOptions) (*SimulationEpisodeListResponse, *Response, error)
+	GetSimulationEpisode(ctx context.Context, runUUID, episodeUUID string) (*SimulationEpisode, *Response, error)
+	GetSimulationEpisodeTrajectoryURL(ctx context.Context, runUUID, episodeUUID string) (*SimulationEpisodeTrajectoryURLResponse, *Response, error)
+	GetSimulationEpisodeTrajectory(ctx context.Context, runUUID, episodeUUID string) (*SimulationTrajectory, *Response, error)
 }
 
 var _ AgentPlatformService = &AgentPlatformServiceOp{}
@@ -517,6 +548,8 @@ const (
 	MetricTypeUnspecified    EvaluationMetricType = "METRIC_TYPE_UNSPECIFIED"
 	MetricTypeGeneralQuality EvaluationMetricType = "METRIC_TYPE_GENERAL_QUALITY"
 	MetricTypeRAGAndTool     EvaluationMetricType = "METRIC_TYPE_RAG_AND_TOOL"
+	MetricTypeModelQuality   EvaluationMetricType = "METRIC_TYPE_MODEL_QUALITY"
+	MetricTypeModelSafety    EvaluationMetricType = "METRIC_TYPE_MODEL_SAFETY"
 )
 
 // EvaluationMetricValueType represents the value type of an evaluation metric.
@@ -539,6 +572,7 @@ const (
 	MetricCategorySafetyAndSecurity EvaluationMetricCategory = "METRIC_CATEGORY_SAFETY_AND_SECURITY"
 	MetricCategoryContextQuality    EvaluationMetricCategory = "METRIC_CATEGORY_CONTEXT_QUALITY"
 	MetricCategoryModelFit          EvaluationMetricCategory = "METRIC_CATEGORY_MODEL_FIT"
+	MetricCategoryConversational    EvaluationMetricCategory = "METRIC_CATEGORY_CONVERSATIONAL"
 )
 
 // EvaluationMetricSource distinguishes platform catalog metrics from user-defined LLM-as-judge metrics.
@@ -548,6 +582,15 @@ const (
 	EvaluationMetricSourceUnspecified EvaluationMetricSource = "EVALUATION_METRIC_SOURCE_UNSPECIFIED"
 	EvaluationMetricSourceBuiltin     EvaluationMetricSource = "EVALUATION_METRIC_SOURCE_BUILTIN"
 	EvaluationMetricSourceCustom      EvaluationMetricSource = "EVALUATION_METRIC_SOURCE_CUSTOM"
+)
+
+// EvaluationMetricTurnType is whether a metric applies to single-turn or multi-turn inputs.
+type EvaluationMetricTurnType string
+
+const (
+	EvaluationMetricTurnTypeUnspecified EvaluationMetricTurnType = "EVALUATION_METRIC_TURN_TYPE_UNSPECIFIED"
+	EvaluationMetricTurnTypeSingleTurn  EvaluationMetricTurnType = "EVALUATION_METRIC_TURN_TYPE_SINGLE_TURN"
+	EvaluationMetricTurnTypeMultiTurn   EvaluationMetricTurnType = "EVALUATION_METRIC_TURN_TYPE_MULTI_TURN"
 )
 
 // Workspace represents a workspace containing agents and evaluation test cases.
@@ -602,15 +645,17 @@ type EvaluationMetric struct {
 	Source            EvaluationMetricSource            `json:"source,omitempty"`
 	CustomEvalConfig  *CustomEvaluationMetricConfig     `json:"custom_eval_config,omitempty"`
 	AssociatedPresets []AssociatedModelEvaluationPreset `json:"associated_presets,omitempty"`
+	TurnType          EvaluationMetricTurnType          `json:"turn_type,omitempty"`
 }
 
 // CustomEvaluationMetricConfig represents the LLM-as-judge scoring configuration for custom evaluation metrics.
 type CustomEvaluationMetricConfig struct {
-	RequiresGroundTruth bool       `json:"requires_ground_truth,omitempty"`
-	ScoringPrompt       string     `json:"scoring_prompt,omitempty"`
-	CreatedAt           *Timestamp `json:"created_at,omitempty"`
-	UpdatedAt           *Timestamp `json:"updated_at,omitempty"`
-	DeletedAt           *Timestamp `json:"deleted_at,omitempty"`
+	RequiresGroundTruth bool                     `json:"requires_ground_truth,omitempty"`
+	ScoringPrompt       string                   `json:"scoring_prompt,omitempty"`
+	TurnType            EvaluationMetricTurnType `json:"turn_type,omitempty"`
+	CreatedAt           *Timestamp               `json:"created_at,omitempty"`
+	UpdatedAt           *Timestamp               `json:"updated_at,omitempty"`
+	DeletedAt           *Timestamp               `json:"deleted_at,omitempty"`
 }
 
 // AssociatedModelEvaluationPreset identifies a saved model evaluation preset that references a custom metric.
@@ -636,12 +681,14 @@ type UpdateCustomEvaluationMetricRequest struct {
 
 // EvaluationDataset represents the dataset information for an evaluation.
 type EvaluationDataset struct {
-	DatasetUUID    string     `json:"dataset_uuid,omitempty"`
-	DatasetName    string     `json:"dataset_name,omitempty"`
-	RowCount       uint32     `json:"row_count,omitempty"`
-	HasGroundTruth bool       `json:"has_ground_truth,omitempty"`
-	FileSize       uint64     `json:"file_size,omitempty"`
-	CreatedAt      *Timestamp `json:"created_at,omitempty"`
+	DatasetUUID     string                    `json:"dataset_uuid,omitempty"`
+	DatasetName     string                    `json:"dataset_name,omitempty"`
+	RowCount        uint32                    `json:"row_count,omitempty"`
+	HasGroundTruth  bool                      `json:"has_ground_truth,omitempty"`
+	FileSize        uint64                    `json:"file_size,omitempty"`
+	DatasetType     EvaluationDatasetType     `json:"dataset_type,omitempty"`
+	DatasetParadigm EvaluationDatasetParadigm `json:"dataset_paradigm,omitempty"`
+	CreatedAt       *Timestamp                `json:"created_at,omitempty"`
 }
 
 // StarMetric represents a star metric configuration.
@@ -2327,6 +2374,238 @@ func (g *AgentPlatformServiceOp) GetModelByUUID(ctx context.Context, uuid string
 	return nil, resp, nil
 }
 
+// ModelCatalogV2ListOptions filters GET /v2/gen-ai/models/catalog_v2.
+// Slice fields are repeated query parameters and use OR semantics, except
+// InputModality, OutputModality, and Capabilities, which require every value.
+type ModelCatalogV2ListOptions struct {
+	Page           int      `url:"page,omitempty"`
+	PerPage        int      `url:"per_page,omitempty"`
+	Search         string   `url:"search,omitempty"`
+	Serving        []string `url:"serving,omitempty"`
+	Badges         []string `url:"badges,omitempty"`
+	InputModality  []string `url:"input_modality,omitempty"`
+	OutputModality []string `url:"output_modality,omitempty"`
+	Product        []string `url:"product,omitempty"`
+	Capabilities   []string `url:"capabilities,omitempty"`
+	ItemType       []string `url:"item_type,omitempty"`
+	SortBy         string   `url:"sort_by,omitempty"`
+	SortDirection  string   `url:"sort_direction,omitempty"`
+	Creator        []string `url:"creator,omitempty"`
+}
+
+// ModelCatalogV2List is the List Model Catalog V2 response.
+type ModelCatalogV2List struct {
+	Data                      []*ModelCatalogEntryV2 `json:"data"`
+	Meta                      *Meta                  `json:"meta,omitempty"`
+	Links                     *Links                 `json:"links,omitempty"`
+	AvailableCreators         []string               `json:"available_creators,omitempty"`
+	AvailableServing          []string               `json:"available_serving,omitempty"`
+	AvailableBadges           []string               `json:"available_badges,omitempty"`
+	AvailableSortBy           []string               `json:"available_sort_by,omitempty"`
+	AvailableSortDirections   []string               `json:"available_sort_directions,omitempty"`
+	AvailableInputModalities  []string               `json:"available_input_modalities,omitempty"`
+	AvailableOutputModalities []string               `json:"available_output_modalities,omitempty"`
+	AvailableProducts         []string               `json:"available_products,omitempty"`
+	AvailableModelTypes       []string               `json:"available_model_types,omitempty"`
+}
+
+// ModelCatalogEntryV2 is a V2 catalog row. Description, code snippets, pricing
+// detail, and liveliness are populated on Get Model Catalog Card V2.
+// Performance is populated on list rows and the card when canary data exists.
+type ModelCatalogEntryV2 struct {
+	ID                       string                   `json:"id,omitempty"`
+	ModelID                  string                   `json:"model_id,omitempty"`
+	Name                     string                   `json:"name,omitempty"`
+	Provider                 string                   `json:"provider,omitempty"`
+	Creator                  string                   `json:"creator,omitempty"`
+	ShortDescription         string                   `json:"short_description,omitempty"`
+	ItemType                 string                   `json:"item_type,omitempty"`
+	ContextWindow            string                   `json:"context_window,omitempty"`
+	ParameterCountInBillions float64                  `json:"parameter_count_in_billions,omitempty"`
+	Capabilities             []string                 `json:"capabilities,omitempty"`
+	Serving                  []string                 `json:"serving,omitempty"`
+	Products                 []string                 `json:"products,omitempty"`
+	Badges                   []string                 `json:"badges,omitempty"`
+	Pricing                  *ModelCatalogPricing     `json:"pricing,omitempty"`
+	InputModality            []string                 `json:"input_modality,omitempty"`
+	OutputModality           []string                 `json:"output_modality,omitempty"`
+	CreatedAt                *Timestamp               `json:"created_at,omitempty"`
+	MaxOutputTokens          string                   `json:"max_output_tokens,omitempty"`
+	ScaledPricingEnabled     bool                     `json:"scaled_pricing_enabled,omitempty"`
+	HuggingFaceRepoID        string                   `json:"huggingface_repo_id,omitempty"`
+	SupportedEndpoints       []string                 `json:"supported_endpoints,omitempty"`
+	Type                     string                   `json:"type,omitempty"`
+	Thinking                 bool                     `json:"thinking,omitempty"`
+	MaxTokens                *NumericRange            `json:"max_tokens,omitempty"`
+	SupportsTemperature      bool                     `json:"supports_temperature,omitempty"`
+	Temperature              *NumericRange            `json:"temperature,omitempty"`
+	TopP                     *NumericRange            `json:"top_p,omitempty"`
+	ReasoningEfforts         []string                 `json:"reasoning_efforts,omitempty"`
+	Description              string                   `json:"description,omitempty"`
+	CodeSnippets             *CodeSnippets            `json:"code_snippets,omitempty"`
+	PricingDetail            *ModelPricingDetail      `json:"pricing_detail,omitempty"`
+	Liveliness               *ModelLiveliness         `json:"liveliness,omitempty"`
+	Performance              *ModelCatalogPerformance `json:"performance,omitempty"`
+}
+
+// ModelCatalogPerformance is the compact canary rollup on a V2 catalog row.
+// List uses a rolling 24 hour window. Get uses the liveliness cache window.
+type ModelCatalogPerformance struct {
+	WindowDays           uint32  `json:"window_days,omitempty"`
+	Status               string  `json:"status,omitempty"`
+	E2ELatencyP50Seconds float64 `json:"e2e_latency_p50_seconds,omitempty"`
+	E2ELatencyP75Seconds float64 `json:"e2e_latency_p75_seconds,omitempty"`
+	E2ELatencyP95Seconds float64 `json:"e2e_latency_p95_seconds,omitempty"`
+	ThroughputP50TokPerS float64 `json:"throughput_p50_tok_per_s,omitempty"`
+	ThroughputP75TokPerS float64 `json:"throughput_p75_tok_per_s,omitempty"`
+	ThroughputP95TokPerS float64 `json:"throughput_p95_tok_per_s,omitempty"`
+	Samples              uint32  `json:"samples,omitempty"`
+	TTFTP50Seconds       float64 `json:"ttft_p50_seconds,omitempty"`
+	TTFTP75Seconds       float64 `json:"ttft_p75_seconds,omitempty"`
+	TTFTP95Seconds       float64 `json:"ttft_p95_seconds,omitempty"`
+}
+
+// NumericRange is a min, max, and default bound for a model setting.
+type NumericRange struct {
+	Min     float64 `json:"min,omitempty"`
+	Max     float64 `json:"max,omitempty"`
+	Default float64 `json:"default,omitempty"`
+	Step    float64 `json:"step,omitempty"`
+}
+
+// CodeSnippets holds invocation examples for a catalog model.
+type CodeSnippets struct {
+	Python     string `json:"python,omitempty"`
+	Javascript string `json:"javascript,omitempty"`
+	Curl       string `json:"curl,omitempty"`
+	SDK        string `json:"sdk,omitempty"`
+}
+
+// ModelCatalogPricing is the V2 catalog price list. It includes the shared
+// model rates plus the cache and reasoning rates published on catalog v2.
+type ModelCatalogPricing struct {
+	ModelPricing
+	CacheReadInputPricePerMillion    float64 `json:"cache_read_input_price_per_million,omitempty"`
+	CacheWrite1hInputPricePerMillion float64 `json:"cache_write_1h_input_price_per_million,omitempty"`
+	CacheWrite5mInputPricePerMillion float64 `json:"cache_write_5m_input_price_per_million,omitempty"`
+	InputCacheRead                   float64 `json:"input_cache_read,omitempty"`
+	ReasoningPricePerMillion         float64 `json:"reasoning_price_per_million,omitempty"`
+}
+
+// ModelPricingDetail is the per-variant price breakdown on a catalog card.
+type ModelPricingDetail struct {
+	Variants []*ModelPricingVariant `json:"variants,omitempty"`
+}
+
+// ModelPricingVariant is one tier and billing mode for a model.
+type ModelPricingVariant struct {
+	Tier          string               `json:"tier,omitempty"`
+	Label         string               `json:"label,omitempty"`
+	Mode          string               `json:"mode,omitempty"`
+	Prices        *ModelCatalogPricing `json:"prices,omitempty"`
+	ScaledPricing *ModelScaledPricing  `json:"scaled_pricing,omitempty"`
+	Currency      string               `json:"currency,omitempty"`
+}
+
+// ModelScaledPricing is a time-varying price schedule.
+type ModelScaledPricing struct {
+	MinPrices *ModelCatalogPricing    `json:"min_prices,omitempty"`
+	MaxPrices *ModelCatalogPricing    `json:"max_prices,omitempty"`
+	Intervals []*ModelPricingInterval `json:"intervals,omitempty"`
+}
+
+// ModelPricingInterval is one window of constant rates.
+type ModelPricingInterval struct {
+	StartTime *Timestamp           `json:"start_time,omitempty"`
+	EndTime   *Timestamp           `json:"end_time,omitempty"`
+	Prices    *ModelCatalogPricing `json:"prices,omitempty"`
+}
+
+// ModelLiveliness is canary performance for a catalog card.
+type ModelLiveliness struct {
+	Source        string                 `json:"source,omitempty"`
+	OverallStatus string                 `json:"overall_status,omitempty"`
+	TTFT          *ModelLivelinessMetric `json:"ttft,omitempty"`
+	E2ELatency    *ModelLivelinessMetric `json:"e2e_latency,omitempty"`
+	Throughput    *ModelLivelinessMetric `json:"throughput,omitempty"`
+}
+
+// ModelLivelinessMetric is one daily performance series.
+type ModelLivelinessMetric struct {
+	Unit   string                `json:"unit,omitempty"`
+	Status string                `json:"status,omitempty"`
+	Days   []*ModelLivelinessDay `json:"days,omitempty"`
+}
+
+// ModelLivelinessDay is one UTC day of a performance metric.
+type ModelLivelinessDay struct {
+	DayMS   float64 `json:"day_ms,omitempty"`
+	Partial bool    `json:"partial,omitempty"`
+	Samples uint32  `json:"samples,omitempty"`
+	P50     float64 `json:"p50,omitempty"`
+	P75     float64 `json:"p75,omitempty"`
+	P95     float64 `json:"p95,omitempty"`
+}
+
+// ListModelCatalogV2 returns a page of the authenticated V2 model catalog.
+func (g *AgentPlatformServiceOp) ListModelCatalogV2(ctx context.Context, opt *ModelCatalogV2ListOptions) (*ModelCatalogV2List, *Response, error) {
+	path, err := addOptions(modelCatalogV2BasePath, opt)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	req, err := g.client.NewRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	root := new(ModelCatalogV2List)
+	resp, err := g.client.Do(ctx, req, root)
+	if err != nil {
+		return nil, resp, err
+	}
+	if root.Links != nil {
+		resp.Links = root.Links
+	}
+
+	return root, resp, nil
+}
+
+// GetModelCatalogCardV2 returns one V2 catalog card.
+// id is the catalog ID. modelID is the inference model ID and may be used
+// instead of id. At least one of them is required.
+func (g *AgentPlatformServiceOp) GetModelCatalogCardV2(ctx context.Context, id, modelID string) (*ModelCatalogEntryV2, *Response, error) {
+	id = strings.TrimSpace(id)
+	modelID = strings.TrimSpace(modelID)
+	if id == "" && modelID == "" {
+		return nil, nil, fmt.Errorf("id or model_id is required")
+	}
+	pathID := id
+	if pathID == "" {
+		pathID = modelID
+	}
+
+	path := fmt.Sprintf("%s/%s", modelCatalogV2BasePath, url.PathEscape(pathID))
+	if modelID != "" {
+		path += "?model_id=" + url.QueryEscape(modelID)
+	}
+
+	req, err := g.client.NewRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	root := new(struct {
+		Data *ModelCatalogEntryV2 `json:"data"`
+	})
+	resp, err := g.client.Do(ctx, req, root)
+	if err != nil {
+		return nil, resp, err
+	}
+
+	return root.Data, resp, nil
+}
+
 // ListDatacenterRegions returns a list of available datacenter regions for Agent Platform services
 func (g *AgentPlatformServiceOp) ListDatacenterRegions(ctx context.Context, servesInference, servesBatch *bool) ([]*DatacenterRegions, *Response, error) {
 	path := datacenterRegionsPath
@@ -2736,10 +3015,10 @@ func (s *AgentPlatformServiceOp) UpdateModelEvaluationRun(ctx context.Context, e
 // CandidateInferenceConfig is the inference configuration applied to the
 // candidate model when running a model evaluation run.
 type CandidateInferenceConfig struct {
-	MaxTokens    int64   `json:"max_tokens,omitempty"`
-	StopToken    string  `json:"stop_token,omitempty"`
-	SystemPrompt string  `json:"system_prompt,omitempty"`
-	Temperature  float32 `json:"temperature,omitempty"`
+	ReasoningEffort string  `json:"reasoning_effort,omitempty"`
+	StopToken       string  `json:"stop_token,omitempty"`
+	SystemPrompt    string  `json:"system_prompt,omitempty"`
+	Temperature     float32 `json:"temperature,omitempty"`
 }
 
 // PresignedUrlFile describes a single file for which a presigned upload URL is
@@ -2779,13 +3058,20 @@ type CreateModelEvaluationRunRequest struct {
 	CandidateModelSource     CandidateModelSource      `json:"candidate_model_source,omitempty"`
 	CandidateModelUUID       string                    `json:"candidate_model_uuid,omitempty"`
 	DatasetUUID              string                    `json:"dataset_uuid,omitempty"`
-	EvalPresetUUID           string                    `json:"eval_preset_uuid,omitempty"`
-	JudgeModelUUID           string                    `json:"judge_model_uuid,omitempty"`
-	MetricUUIDs              []string                  `json:"metric_uuids,omitempty"`
-	Name                     string                    `json:"name,omitempty"`
-	PresetName               string                    `json:"preset_name,omitempty"`
-	Source                   string                    `json:"source,omitempty"`
-	StarMetric               *StarMetric               `json:"star_metric,omitempty"`
+	// Epochs is the number of times to evaluate each dataset row (n-pass).
+	// Defaults to 1 when unset. Capped at 10 by the API today.
+	Epochs         uint32   `json:"epochs,omitempty"`
+	EvalPresetUUID string   `json:"eval_preset_uuid,omitempty"`
+	JudgeModelUUID string   `json:"judge_model_uuid,omitempty"`
+	MetricUUIDs    []string `json:"metric_uuids,omitempty"`
+	Name           string   `json:"name,omitempty"`
+	PresetName     string   `json:"preset_name,omitempty"`
+	// PresetSaveSections controls which sections of the resolved configuration
+	// are persisted as a new reusable preset. Empty means do not save a preset.
+	// Ignored when EvalPresetUUID is set.
+	PresetSaveSections []PresetSaveSection `json:"preset_save_sections,omitempty"`
+	Source             string              `json:"source,omitempty"`
+	StarMetric         *StarMetric         `json:"star_metric,omitempty"`
 }
 
 // ModelEvaluationRunCreateResponse is the response returned by
@@ -2797,25 +3083,38 @@ type ModelEvaluationRunCreateResponse struct {
 // ModelEvaluationPreset is a saved, reusable configuration for model
 // evaluation runs.
 type ModelEvaluationPreset struct {
-	CreatedAt      *Timestamp          `json:"created_at,omitempty"`
-	DatasetName    string              `json:"dataset_name,omitempty"`
-	DatasetUuid    string              `json:"dataset_uuid,omitempty"`
-	EvalPresetUuid string              `json:"eval_preset_uuid,omitempty"`
-	JudgeModelName string              `json:"judge_model_name,omitempty"`
-	JudgeModelUuid string              `json:"judge_model_uuid,omitempty"`
-	Metrics        []*EvaluationMetric `json:"metrics,omitempty"`
-	Name           string              `json:"name,omitempty"`
-	StarMetric     *StarMetric         `json:"star_metric,omitempty"`
+	CandidateInferenceConfig *CandidateInferenceConfig `json:"candidate_inference_config,omitempty"`
+	CandidateModelName       string                    `json:"candidate_model_name,omitempty"`
+	CandidateModelSource     CandidateModelSource      `json:"candidate_model_source,omitempty"`
+	CandidateModelUuid       string                    `json:"candidate_model_uuid,omitempty"`
+	CandidateSystemPrompt    string                    `json:"candidate_system_prompt,omitempty"`
+	CreatedAt                *Timestamp                `json:"created_at,omitempty"`
+	DatasetName              string                    `json:"dataset_name,omitempty"`
+	DatasetUuid              string                    `json:"dataset_uuid,omitempty"`
+	EvalPresetUuid           string                    `json:"eval_preset_uuid,omitempty"`
+	JudgeModelName           string                    `json:"judge_model_name,omitempty"`
+	JudgeModelUuid           string                    `json:"judge_model_uuid,omitempty"`
+	Metrics                  []*EvaluationMetric       `json:"metrics,omitempty"`
+	Name                     string                    `json:"name,omitempty"`
+	SavedSections            []PresetSaveSection       `json:"saved_sections,omitempty"`
+	StarMetric               *StarMetric               `json:"star_metric,omitempty"`
 }
 
 // MetricResultSummary represents per-metric aggregated pass/fail statistics
 // across all prompts in an evaluation run.
 type MetricResultSummary struct {
-	Description string  `json:"description,omitempty"`
-	FailPercent float64 `json:"fail_percent,omitempty"`
-	MetricName  string  `json:"metric_name,omitempty"`
-	MetricUuid  string  `json:"metric_uuid,omitempty"`
-	PassPercent float64 `json:"pass_percent,omitempty"`
+	AvgAtKPercent  float64 `json:"avg_at_k_percent,omitempty"`
+	ConsAtKPercent float64 `json:"cons_at_k_percent,omitempty"`
+	Description    string  `json:"description,omitempty"`
+	FailCount      uint32  `json:"fail_count,omitempty"`
+	FailPercent    float64 `json:"fail_percent,omitempty"`
+	MetricName     string  `json:"metric_name,omitempty"`
+	MetricUuid     string  `json:"metric_uuid,omitempty"`
+	PassAtKPercent float64 `json:"pass_at_k_percent,omitempty"`
+	PassCount      uint32  `json:"pass_count,omitempty"`
+	PassPercent    float64 `json:"pass_percent,omitempty"`
+	SkipPercent    float64 `json:"skip_percent,omitempty"`
+	SkippedCount   uint32  `json:"skipped_count,omitempty"`
 }
 
 // LatencyMetrics contains latency metrics for candidate model invocations,
@@ -2894,13 +3193,51 @@ type PerModelResultSummaries struct {
 	Summaries []*PerModelResultSummary `json:"summaries,omitempty"`
 }
 
+// PerTaskResultSummary is the aggregated evaluation results for a single
+// routing task category in a router evaluation run.
+type PerTaskResultSummary struct {
+	MetricSummaries    []*MetricResultSummary `json:"metric_summaries,omitempty"`
+	PerformanceMetrics *PerformanceMetrics    `json:"performance_metrics,omitempty"`
+	PromptCount        int64                  `json:"prompt_count,omitempty"`
+	TaskName           string                 `json:"task_name,omitempty"`
+}
+
+// PerTaskResultSummaries wraps the per-task summaries used inside a
+// ModelEvaluationRunResultSummary.
+type PerTaskResultSummaries struct {
+	Summaries []*PerTaskResultSummary `json:"summaries,omitempty"`
+}
+
+// PerEpochResultSummary is one epoch's standalone score for a multi-epoch run.
+type PerEpochResultSummary struct {
+	Epoch               uint32  `json:"epoch,omitempty"`
+	OverallScorePercent float64 `json:"overall_score_percent,omitempty"`
+	RowsScored          uint32  `json:"rows_scored,omitempty"`
+}
+
+// EpochResultSummary aggregates avg@k/pass@k/cons@k across epochs when a run
+// repeats each dataset row k times. Only populated when epochs > 1.
+type EpochResultSummary struct {
+	AvgAtKPercent      float64                  `json:"avg_at_k_percent,omitempty"`
+	ConsAtKPercent     float64                  `json:"cons_at_k_percent,omitempty"`
+	Epochs             uint32                   `json:"epochs,omitempty"`
+	PassAtKPercent     float64                  `json:"pass_at_k_percent,omitempty"`
+	PerEpoch           []*PerEpochResultSummary `json:"per_epoch,omitempty"`
+	RowsExcluded       uint32                   `json:"rows_excluded,omitempty"`
+	RowsScored         uint32                   `json:"rows_scored,omitempty"`
+	ScoreStddevPercent float64                  `json:"score_stddev_percent,omitempty"`
+}
+
 // ModelEvaluationRunResultSummary contains the aggregated result summary for
 // a completed model evaluation run.
 type ModelEvaluationRunResultSummary struct {
 	EndTime              *Timestamp               `json:"end_time,omitempty"`
+	EpochSummary         *EpochResultSummary      `json:"epoch_summary,omitempty"`
+	Epochs               uint32                   `json:"epochs,omitempty"`
 	MetricSummaries      []*MetricResultSummary   `json:"metric_summaries,omitempty"`
 	OverallScorePercent  float64                  `json:"overall_score_percent,omitempty"`
 	PerModelSummaries    *PerModelResultSummaries `json:"per_model_summaries,omitempty"`
+	PerTaskSummaries     *PerTaskResultSummaries  `json:"per_task_summaries,omitempty"`
 	PerformanceMetrics   *PerformanceMetrics      `json:"performance_metrics,omitempty"`
 	Pricing              *EvaluationPricing       `json:"pricing,omitempty"`
 	StarMetricSummary    *StarMetricSummary       `json:"star_metric_summary,omitempty"`
@@ -2937,6 +3274,7 @@ type ModelEvaluationRunDetail struct {
 	CreatedAt                *Timestamp                       `json:"created_at,omitempty"`
 	DatasetName              string                           `json:"dataset_name,omitempty"`
 	DatasetUuid              string                           `json:"dataset_uuid,omitempty"`
+	Epochs                   uint32                           `json:"epochs,omitempty"`
 	ErrorDescription         string                           `json:"error_description,omitempty"`
 	EvalPresetName           string                           `json:"eval_preset_name,omitempty"`
 	EvalPresetUuid           string                           `json:"eval_preset_uuid,omitempty"`
@@ -2955,23 +3293,37 @@ type ModelEvaluationRunDetail struct {
 // ModelEvaluationMetricResult represents the per-metric score and judge
 // reasoning for a single prompt in an evaluation run.
 type ModelEvaluationMetricResult struct {
-	ErrorDescription string                    `json:"error_description,omitempty"`
-	MetricName       string                    `json:"metric_name,omitempty"`
-	MetricValueType  EvaluationMetricValueType `json:"metric_value_type,omitempty"`
-	NumberValue      float64                   `json:"number_value,omitempty"`
-	Reasoning        string                    `json:"reasoning,omitempty"`
-	StringValue      string                    `json:"string_value,omitempty"`
+	ErrorDescription string                       `json:"error_description,omitempty"`
+	MetricName       string                       `json:"metric_name,omitempty"`
+	MetricUUID       string                       `json:"metric_uuid,omitempty"`
+	MetricValueType  EvaluationMetricValueType    `json:"metric_value_type,omitempty"`
+	NumberValue      float64                      `json:"number_value,omitempty"`
+	Reasoning        string                       `json:"reasoning,omitempty"`
+	Status           EvaluationMetricResultStatus `json:"status,omitempty"`
+	StringValue      string                       `json:"string_value,omitempty"`
+}
+
+// ModelEvaluationEpochAttempt is one epoch's attempt at a dataset row, nested
+// under ModelEvaluationResult.EpochResults for multi-epoch runs.
+type ModelEvaluationEpochAttempt struct {
+	CandidateRoutedTask string                         `json:"candidate_routed_task,omitempty"`
+	MetricResults       []*ModelEvaluationMetricResult `json:"metric_results,omitempty"`
+	Output              string                         `json:"output,omitempty"`
 }
 
 // ModelEvaluationResult represents the per-prompt result for a model
 // evaluation run.
 type ModelEvaluationResult struct {
-	CandidateModelName string                         `json:"candidate_model_name,omitempty"`
-	CandidateModelUuid string                         `json:"candidate_model_uuid,omitempty"`
-	GroundTruth        string                         `json:"ground_truth,omitempty"`
-	Input              string                         `json:"input,omitempty"`
-	MetricResults      []*ModelEvaluationMetricResult `json:"metric_results,omitempty"`
-	Output             string                         `json:"output,omitempty"`
+	CandidateModelName  string                                  `json:"candidate_model_name,omitempty"`
+	CandidateModelUuid  string                                  `json:"candidate_model_uuid,omitempty"`
+	CandidateRoutedTask string                                  `json:"candidate_routed_task,omitempty"`
+	Epoch               uint32                                  `json:"epoch,omitempty"`
+	EpochResults        map[string]*ModelEvaluationEpochAttempt `json:"epoch_results,omitempty"`
+	GroundTruth         string                                  `json:"ground_truth,omitempty"`
+	Input               string                                  `json:"input,omitempty"`
+	MetricResults       []*ModelEvaluationMetricResult          `json:"metric_results,omitempty"`
+	Output              string                                  `json:"output,omitempty"`
+	RowNumber           uint32                                  `json:"row_number,omitempty"`
 }
 
 // ModelEvaluationRunGetOptions specifies optional pagination parameters for
@@ -3021,9 +3373,11 @@ type ModelEvaluationRunListOptions struct {
 // ModelEvaluationRunListResponse is the response returned by
 // ListModelEvaluationRuns.
 type ModelEvaluationRunListResponse struct {
-	Runs  []*ModelEvaluationRunSummary `json:"runs,omitempty"`
-	Links *Links                       `json:"links,omitempty"`
-	Meta  *Meta                        `json:"meta,omitempty"`
+	AvailableCandidateTypes []CandidateModelSource       `json:"available_candidate_types,omitempty"`
+	AvailableStatuses       []ModelEvaluationRunStatus   `json:"available_statuses,omitempty"`
+	Runs                    []*ModelEvaluationRunSummary `json:"runs,omitempty"`
+	Links                   *Links                       `json:"links,omitempty"`
+	Meta                    *Meta                        `json:"meta,omitempty"`
 }
 
 // ModelEvaluationPresetListResponse is the response returned by
@@ -3038,23 +3392,34 @@ type ModelEvaluationMetricListResponse struct {
 	Metrics []*EvaluationMetric `json:"metrics,omitempty"`
 }
 
+// ModelEvaluationMetricListOptions holds optional filters for
+// ListModelEvaluationMetricsWithOptions.
+type ModelEvaluationMetricListOptions struct {
+	TurnType EvaluationMetricTurnType `url:"turn_type,omitempty"`
+}
+
 // EvaluationDatasetListOptions holds the optional filters for
 // ListEvaluationDatasets.
 type EvaluationDatasetListOptions struct {
 	// DatasetType filters the results by evaluation dataset type.
 	DatasetType EvaluationDatasetType `url:"dataset_type,omitempty"`
+	// DatasetParadigm filters by row/content shape.
+	DatasetParadigm EvaluationDatasetParadigm `url:"dataset_paradigm,omitempty"`
+	// HasGroundTruth filters by whether the dataset includes ground-truth values.
+	HasGroundTruth *bool `url:"has_ground_truth,omitempty"`
 }
 
 // EvaluationDatasetInfo represents an evaluation dataset returned by
 // ListEvaluationDatasets.
 type EvaluationDatasetInfo struct {
-	CreatedAt      *Timestamp            `json:"created_at,omitempty"`
-	DatasetName    string                `json:"dataset_name,omitempty"`
-	DatasetType    EvaluationDatasetType `json:"dataset_type,omitempty"`
-	DatasetUUID    string                `json:"dataset_uuid,omitempty"`
-	FileSize       string                `json:"file_size,omitempty"`
-	HasGroundTruth bool                  `json:"has_ground_truth,omitempty"`
-	RowCount       int64                 `json:"row_count,omitempty"`
+	CreatedAt       *Timestamp                `json:"created_at,omitempty"`
+	DatasetName     string                    `json:"dataset_name,omitempty"`
+	DatasetParadigm EvaluationDatasetParadigm `json:"dataset_paradigm,omitempty"`
+	DatasetType     EvaluationDatasetType     `json:"dataset_type,omitempty"`
+	DatasetUUID     string                    `json:"dataset_uuid,omitempty"`
+	FileSize        string                    `json:"file_size,omitempty"`
+	HasGroundTruth  bool                      `json:"has_ground_truth,omitempty"`
+	RowCount        int64                     `json:"row_count,omitempty"`
 }
 
 // EvaluationDatasetListResponse is the response returned by
@@ -3066,6 +3431,41 @@ type EvaluationDatasetListResponse struct {
 // EvaluationDatasetDeleteResponse is the response returned by
 // DeleteEvaluationDataset.
 type EvaluationDatasetDeleteResponse struct{}
+
+// CreateEvaluationDatasetRequest is the request body for creating an
+// evaluation dataset from a previously uploaded file.
+type CreateEvaluationDatasetRequest struct {
+	Name              string                    `json:"name,omitempty"`
+	DatasetType       EvaluationDatasetType     `json:"dataset_type,omitempty"`
+	DatasetParadigm   EvaluationDatasetParadigm `json:"dataset_paradigm,omitempty"`
+	FileUploadDataset *FileUploadDataSource     `json:"file_upload_dataset,omitempty"`
+}
+
+// CreateEvaluationDatasetResponse is the response returned by
+// CreateEvaluationDataset.
+type CreateEvaluationDatasetResponse struct {
+	EvaluationDatasetUUID string `json:"evaluation_dataset_uuid,omitempty"`
+}
+
+// CreateEvaluationDataset registers an evaluation dataset from a file that was
+// previously uploaded via CreateModelEvalDatasetUploadPresignedURLs.
+func (s *AgentPlatformServiceOp) CreateEvaluationDataset(ctx context.Context, createRequest *CreateEvaluationDatasetRequest) (*CreateEvaluationDatasetResponse, *Response, error) {
+	if createRequest == nil {
+		return nil, nil, fmt.Errorf("create request is required")
+	}
+
+	req, err := s.client.NewRequest(ctx, http.MethodPost, evaluationDatasetsBasePath, createRequest)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	root := new(CreateEvaluationDatasetResponse)
+	resp, err := s.client.Do(ctx, req, root)
+	if err != nil {
+		return nil, resp, err
+	}
+	return root, resp, nil
+}
 
 // CreateModelEvaluationRun creates a new model evaluation run.
 func (s *AgentPlatformServiceOp) CreateModelEvaluationRun(ctx context.Context, createRequest *CreateModelEvaluationRunRequest) (*ModelEvaluationRunCreateResponse, *Response, error) {
@@ -3226,7 +3626,18 @@ func (s *AgentPlatformServiceOp) ListModelEvaluationPresets(ctx context.Context)
 // ListModelEvaluationMetrics lists all available metrics that can be selected
 // when creating a model evaluation run.
 func (s *AgentPlatformServiceOp) ListModelEvaluationMetrics(ctx context.Context) (*ModelEvaluationMetricListResponse, *Response, error) {
-	req, err := s.client.NewRequest(ctx, http.MethodGet, modelEvaluationMetricsBasePath, nil)
+	return s.ListModelEvaluationMetricsWithOptions(ctx, nil)
+}
+
+// ListModelEvaluationMetricsWithOptions lists model evaluation metrics, optionally
+// filtered by turn type (single-turn vs multi-turn).
+func (s *AgentPlatformServiceOp) ListModelEvaluationMetricsWithOptions(ctx context.Context, opt *ModelEvaluationMetricListOptions) (*ModelEvaluationMetricListResponse, *Response, error) {
+	path, err := addOptions(modelEvaluationMetricsBasePath, opt)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	req, err := s.client.NewRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, nil, err
 	}

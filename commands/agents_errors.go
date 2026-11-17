@@ -17,13 +17,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
-
-	"golang.org/x/term"
 )
 
 // godoErrorLine matches godo.ErrorResponse.Error() output:
@@ -45,7 +42,9 @@ var unknownFieldQuotedRE = regexp.MustCompile(`unknown field "([^"]*)"`)
 var contractsPathHintRE = regexp.MustCompile(`;?\s*see contracts/[A-Za-z0-9._/-]+`)
 
 // agentPrettyError is a user-facing agent CLI error: human title + reason,
-// without METHOD/URL/status noise from raw godo ErrorResponse strings.
+// without METHOD/URL/status noise from raw godo ErrorResponse strings. It
+// implements StructuredError so checkErr and inline stream failures share the
+// same Title/Reason/status/next-step layout as every other doctl command.
 type agentPrettyError struct {
 	title  string
 	reason string
@@ -74,68 +73,63 @@ func (e *agentPrettyError) Unwrap() error {
 	return e.cause
 }
 
-// DisplayError returns the styled multi-line form printed by checkErr for
-// agent commands (instead of "Error: METHOD URL: 400 …").
-func (e *agentPrettyError) DisplayError() string {
+func (e *agentPrettyError) Title() string {
 	if e == nil {
 		return ""
 	}
-	prev := stylingEnabled
-	stylingEnabled = agentErrorStyling()
-	defer func() { stylingEnabled = prev }()
-
-	var b strings.Builder
-	title := strings.TrimSpace(e.title)
-	if title == "" {
-		title = "Something went wrong"
+	if title := strings.TrimSpace(e.title); title != "" {
+		return title
 	}
-	fmt.Fprintf(&b, "%s %s\n", colorize("✗", colError), boldColor(title, colError))
+	return "Something went wrong"
+}
 
+func (e *agentPrettyError) Reason() string {
+	if e == nil {
+		return ""
+	}
 	reason := strings.TrimSpace(e.reason)
 	if reason == "" && e.cause != nil {
 		reason = strings.TrimSpace(e.cause.Error())
 	}
-	if reason != "" && !strings.EqualFold(reason, title) {
-		fmt.Fprintf(&b, "  %s\n", reason)
+	if reason == "" || strings.EqualFold(reason, e.Title()) {
+		return ""
 	}
-	if e.status > 0 {
-		b.WriteString(cardRow("Status", colorize(httpStatusLabel(e.status), colMuted)))
+	return reason
+}
+
+func (e *agentPrettyError) Status() int {
+	if e == nil {
+		return 0
 	}
-	if len(e.tips) > 0 {
-		fmt.Fprintln(&b)
-		fmt.Fprintln(&b, colorize("Next step", colMuted))
-		for _, tip := range e.tips {
-			tip = strings.TrimSpace(tip)
-			if tip == "" {
-				continue
-			}
-			fmt.Fprintf(&b, "  %s\n", tip)
+	return e.status
+}
+
+func (e *agentPrettyError) RequestID() string {
+	if e == nil {
+		return ""
+	}
+	return genericStructuredError{err: e.cause}.RequestID()
+}
+
+func (e *agentPrettyError) NextStep() string {
+	if e == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(e.tips))
+	for _, tip := range e.tips {
+		if tip = strings.TrimSpace(tip); tip != "" {
+			parts = append(parts, tip)
 		}
 	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-func agentErrorStyling() bool {
-	if os.Getenv("NO_COLOR") != "" {
-		return false
-	}
-	return term.IsTerminal(int(os.Stderr.Fd()))
-}
-
-func httpStatusLabel(code int) string {
-	text := http.StatusText(code)
-	if text == "" {
-		return fmt.Sprintf("%d", code)
-	}
-	return fmt.Sprintf("%d %s", code, text)
+	return strings.Join(parts, "; ")
 }
 
 // beautifyAgentErrorFor is beautifyAgentError plus billing enrichment: a
 // prepayment-gate 402 gets the team's live balance and auto top-off state
-// folded into its card. Every spend path returns through here, so no call site
-// has to opt in.
+// folded into the StructuredError. Every spend path returns through here, so
+// no call site has to opt in.
 //
-// It re-derives the prepay card even from an already-beautified error, because
+// It re-derives the prepay error even from an already-beautified error, because
 // several commands beautify early and would otherwise keep the plain variant.
 func beautifyAgentErrorFor(c *CmdConfig, err error) error {
 	if err == nil {
@@ -148,7 +142,7 @@ func beautifyAgentErrorFor(c *CmdConfig, err error) error {
 }
 
 // beautifyAgentError rewrites bare API/local errors into agentPrettyError so
-// checkErr can render a card instead of a raw REST dump.
+// checkErr can render the shared structured layout instead of a raw REST dump.
 func beautifyAgentError(err error) error {
 	if err == nil {
 		return nil
@@ -206,12 +200,20 @@ func beautifyAgentError(err error) error {
 		tips = []string{"doctl harness-runtime config list-sessions <config-id>", "doctl harness-runtime remove <session>"}
 	case strings.Contains(lower, "mutually exclusive") || strings.Contains(lower, "is required") || strings.Contains(lower, "invalid --"):
 		title = "Invalid arguments"
+	case lower == "operation aborted":
+		// A delete the user did not confirm, or one that must ask and has no terminal to ask
+		// on. Nothing was sent to the API.
+		title = "Not confirmed"
+		tips = []string{"Nothing was deleted", "Re-run with --force to delete without being asked"}
 	case strings.Contains(lower, "not set locally") || strings.Contains(lower, "environment variable"):
 		title = "Missing environment value"
 		tips = []string{"Set the variable in your shell, or re-run in a terminal to be prompted"}
 	case strings.Contains(lower, "openai"):
 		title = "OpenAI Agents request failed"
 		tips = []string{"Check $OPENAI_API_KEY", "Retry in a moment"}
+	case strings.Contains(lower, "exec timed out"):
+		title = "Exec timed out"
+		tips = []string{"Pass a larger --timeout", "Or omit --timeout to use the server default"}
 	case strings.Contains(lower, "timed out"):
 		title = "Timed out"
 		tips = []string{"Retry with a longer --wait-timeout", "doctl harness-runtime show <session>"}
@@ -235,8 +237,14 @@ func agentErrorTitleAndTips(msg string, status int) (title string, tips []string
 	lower := strings.ToLower(msg)
 	switch status {
 	case http.StatusUnauthorized:
-		return "Authentication failed", []string{"doctl auth init"}
+		return "Authentication failed", []string{"doctl auth login"}
 	case http.StatusForbidden:
+		// A team that has not been let into persistent workspaces gets a 403 with
+		// this message. Its token and permissions are fine, so the scopes tip would
+		// send it the wrong way, and a retry does not help.
+		if strings.Contains(lower, "workspaces are not enabled") {
+			return "Not available yet", nil
+		}
 		return "Access denied", []string{"Check your token scopes or team permissions"}
 	case http.StatusNotFound:
 		return "Not found", []string{"doctl harness-runtime list", "Confirm the ID or name and try again"}
@@ -266,6 +274,9 @@ func agentErrorTitleAndTips(msg string, status int) (title string, tips []string
 	case http.StatusPaymentRequired:
 		return prepayBlockedTitle, []string{fmt.Sprintf("Add funds at %s", prepayTopUpURL), prepayBalanceCmd}
 	case http.StatusTooManyRequests:
+		if strings.Contains(lower, "exec stream") || strings.Contains(lower, "capacity exhausted") {
+			return "Exec stream capacity exhausted", []string{"Wait a moment and retry"}
+		}
 		return "Rate limited", []string{"Wait a moment and retry"}
 	case http.StatusBadRequest:
 		if strings.Contains(lower, "agentspec") || strings.Contains(lower, "unknown field") ||
@@ -276,7 +287,18 @@ func agentErrorTitleAndTips(msg string, status int) (title string, tips []string
 			}
 		}
 		return "Invalid request", nil
-	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	case http.StatusNotImplemented:
+		// Permanent for now, so no retry advice.
+		return "Not available yet", nil
+	case http.StatusGatewayTimeout:
+		if strings.Contains(lower, "exec timed out") {
+			return "Exec timed out", []string{
+				"Pass a larger --timeout",
+				"Or omit --timeout to use the server default",
+			}
+		}
+		return "Service temporarily unavailable", []string{"Retry in a moment"}
+	case http.StatusBadGateway, http.StatusServiceUnavailable:
 		return "Service temporarily unavailable", []string{"Retry in a moment"}
 	default:
 		if status >= 500 {
@@ -356,9 +378,4 @@ func isCopyPasteSpace(r rune) bool {
 		return true
 	}
 	return unicode.IsSpace(r) && r != ' ' && r != '\t' && r != '\n' && r != '\r'
-}
-
-// displayableError is implemented by agentPrettyError for checkErr.
-type displayableError interface {
-	DisplayError() string
 }
